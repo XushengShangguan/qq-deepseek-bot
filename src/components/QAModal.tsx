@@ -1,11 +1,10 @@
 "use client";
 
-import {Fragment, useEffect, useState} from "react";
+import { Fragment, FormEvent, useEffect, useRef, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { useCompletion } from "ai/react";
-import {ChatBlock, responseToChatBlocks} from "@/components/ChatBlock";
 
-var last_name = "";
+type Line = { role: "user" | "assistant" | "error"; text: string };
 
 export default function QAModal({
   open,
@@ -16,49 +15,75 @@ export default function QAModal({
   setOpen: any;
   example: any;
 }) {
-  if (!example) {
-    // create a dummy so the completion doesn't croak during init.
-    example = new Object();
-    example.llm = "";
-    example.name = "";
-  }
+  const name: string = example?.name || "";
+  const [lines, setLines] = useState<Line[]>([]);
+  const [pending, setPending] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  let {
-    completion,
-    input,
-    isLoading,
-    handleInputChange,
-    handleSubmit,
-    stop,
-    setInput,
-    setCompletion,
-  } = useCompletion({
-    api: "/api/" + example.llm,
-    headers: { name: example.name },
-  });
-
-  let [blocks, setBlocks] = useState<any[] | null>(null)
+  const { completion, input, setInput, handleInputChange, complete, isLoading, stop, setCompletion } =
+    useCompletion({
+      api: "/api/chat",
+      headers: { name },
+      onFinish: (prompt, result) => {
+        setLines((l) => [
+          ...l,
+          { role: "user", text: prompt },
+          { role: "assistant", text: result },
+        ]);
+        setPending(null);
+        setCompletion("");
+      },
+      onError: (err) => {
+        setLines((l) => [
+          ...l,
+          ...(pending ? [{ role: "user" as const, text: pending }] : []),
+          { role: "error", text: err.message || "出错了" },
+        ]);
+        setPending(null);
+      },
+    });
 
   useEffect(() => {
-    // When the completion changes, parse it to multimodal blocks for display.
-    if (completion) {
-      setBlocks(responseToChatBlocks(completion))
-    } else {
-      setBlocks(null)
-    }
-  }, [completion])
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines, completion, pending]);
 
-  if (!example) {
-    console.log("ERROR: no companion selected");
-    return null;
-  }
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || isLoading) return;
+    setPending(text);
+    setInput("");
+    complete(text);
+  };
 
   const handleClose = () => {
+    stop();
     setInput("");
     setCompletion("");
-    stop();
+    setPending(null);
+    setLines([]);
     setOpen(false);
   };
+
+  const bubble = (line: Line, key: number | string) => (
+    <div
+      key={key}
+      className={"flex " + (line.role === "user" ? "justify-end" : "justify-start")}
+    >
+      <p
+        className={
+          "max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm " +
+          (line.role === "user"
+            ? "bg-sky-700 text-white"
+            : line.role === "error"
+            ? "bg-red-900/60 text-red-200"
+            : "bg-gray-700 text-gray-100")
+        }
+      >
+        {line.text}
+      </p>
+    </div>
+  );
 
   return (
     <Transition.Root show={open} as={Fragment}>
@@ -87,54 +112,26 @@ export default function QAModal({
               leaveTo="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
             >
               <Dialog.Panel className="relative transform overflow-hidden rounded-lg bg-gray-800 px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:p-6 w-full max-w-3xl">
-                <div>
-                  <form onSubmit={handleSubmit}>
-                    <input
-                      placeholder="How's your day?"
-                      className={"w-full flex-auto rounded-md border-0 bg-white/5 px-3.5 py-2 shadow-sm focus:outline-none sm:text-sm sm:leading-6 " + (isLoading && !completion ? "text-gray-600 cursor-not-allowed" : "text-white")}                      
-                      value={input}
-                      onChange={handleInputChange}
-                      disabled={isLoading && !blocks}
-                    />
-                  </form>
-                  <div className="mt-3 sm:mt-5">
-                    <div className="mt-2">
-                      <p className="text-sm text-gray-500">
-                        Chat with {example.name}
-                      </p>
-                    </div>
-                    {blocks && (
-                      <div className="mt-2">
-                        {blocks}
-                      </div>
+                <p className="text-sm text-gray-400">和 {name} 聊天</p>
+                <div className="mt-3 flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+                  {lines.map((line, i) => bubble(line, i))}
+                  {pending && bubble({ role: "user", text: pending }, "pending")}
+                  {pending &&
+                    bubble(
+                      { role: "assistant", text: completion || "…" },
+                      "streaming"
                     )}
-
-                    {isLoading && !blocks && (
-                      <p className="flex items-center justify-center mt-4">
-                        <svg
-                          className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            stroke-width="4"
-                          ></circle>
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                          ></path>
-                        </svg>
-                      </p>
-                    )}
-                  </div>
+                  <div ref={bottomRef} />
                 </div>
+                <form onSubmit={handleSubmit} className="mt-4">
+                  <input
+                    placeholder="今天过得怎么样？"
+                    className="w-full flex-auto rounded-md border-0 bg-white/5 px-3.5 py-2 text-white shadow-sm focus:outline-none sm:text-sm sm:leading-6"
+                    value={input}
+                    onChange={handleInputChange}
+                    autoFocus
+                  />
+                </form>
               </Dialog.Panel>
             </Transition.Child>
           </div>

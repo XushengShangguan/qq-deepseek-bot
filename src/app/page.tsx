@@ -11,7 +11,7 @@ export default function Home() {
         </h1>
 
         <p className="mx-auto mt-4 max-w-xl text-center text-xl leading-8 text-slate-400">
-          Help you setup an AI companion project with ease. Here are some example characters: 
+          本地调试：点击角色开始聊天
         </p>
 
         <Examples />

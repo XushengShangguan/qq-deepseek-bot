@@ -1,3 +1,52 @@
+# QQ Companion（基于 a16z companion-app 改造）
+
+> 改造计划见上级目录的 `Claude QQ Virtual Girlfriend Plan.md`。下方 "AI Companion App" 以后的内容是原项目的说明，其中 Clerk / Pinecone / Upstash / OpenAI 的部分已不再适用。
+
+## 本地运行
+
+```bash
+export PATH=/opt/homebrew/opt/node@20/bin:$PATH
+cp .env.local.example .env.local   # 填入模型配置；不填 key 时可先用 LLM_PROVIDER=mock
+npm install
+npm run dev                         # 打开 http://localhost:3000
+```
+
+- 不需要任何云服务账号，所有数据存在本地 `data/companion.db`（SQLite）。
+- 查看角色记住了什么：`http://localhost:3000/api/memory?companion=Mina`
+- 改人设：编辑 `companions/Mina.txt`；角色列表在 `companions/companions.json`。
+
+## 接入 QQ（NapCat + Docker）
+
+1. 安装并打开 Docker Desktop。
+2. 启动 NapCat：`cd napcat && docker compose up -d`
+3. 打开 http://127.0.0.1:6099/webui ，用 `napcat/.env` 里的 `WEBUI_TOKEN` 登录，用**机器人小号**扫码登录 QQ。
+4. 在 WebUI 的"网络配置"里确认有两项且已启用（`napcat/data/config/onebot11.json` 预置）：
+   - HTTP 服务器 `companion-api`，端口 3001
+   - HTTP 客户端 `companion-webhook`，地址 `http://host.docker.internal:3000/api/qq/webhook`
+   两者的 token 必须和 `.env.local` 里的 `QQ_TOKEN` 一致。如果没有出现，就在 WebUI 里按上面的值手动添加。
+5. `.env.local` 里把 `QQ_ALLOWED_USERS` 填成你自己的 QQ 号。
+6. `npm run dev`，然后用你的 QQ 给小号发私聊。
+
+流程：NapCat 把私聊推到 `/api/qq/webhook` → 等 2 秒合并连发的消息 → 对话引擎生成回复 → 按换行拆成几条，通过 NapCat 的 `send_private_msg` 发回。
+
+## 代码结构
+
+| 文件 | 作用 |
+|---|---|
+| `src/lib/llm.ts` | 模型接口，`LLM_PROVIDER` 切换（claude / mock，DeepSeek 待加） |
+| `src/lib/claude.ts` | Claude 实现 |
+| `src/lib/conversation.ts` | 核心引擎：组装 prompt、调用模型、保存、触发记忆提取 |
+| `src/lib/memory.ts` | 短期聊天记录 + 长期记忆（重要度 + 关键词检索） |
+| `src/lib/relationship.ts` | 亲密度 / 信任 / 俏皮 数值和关系事件 |
+| `src/lib/extractor.ts` | 每轮对话后判断"值不值得记住" |
+| `src/lib/db.ts` | SQLite 表结构 |
+| `src/app/api/chat` | 浏览器聊天入口 |
+| `src/lib/qq.ts` | QQ 收发：解析 OneBot 消息、白名单、合并连发、分条发送 |
+| `src/app/api/qq/webhook` | 接收 NapCat 推送的 QQ 事件 |
+| `napcat/compose.yaml` | NapCat 的 Docker 配置 |
+
+---
+
 # AI Companion App (based on AI Getting Started template)
 
 [Live Demo](https://ai-companion-stack.com/)

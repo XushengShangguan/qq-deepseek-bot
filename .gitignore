@@ -42,3 +42,9 @@ next-env.d.ts
 
 # Yarn Lockfiles (since this project uses NPM)
 yarn.lock
+# local SQLite database
+/data/
+
+# NapCat login data, config (contains token) and WebUI token
+/napcat/data/
+/napcat/.env

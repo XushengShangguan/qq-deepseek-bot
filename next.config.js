@@ -2,6 +2,8 @@
 const nextConfig = {
   experimental: {
     serverActions: true,
+    // Native module; load it from node_modules at runtime instead of bundling.
+    serverComponentsExternalPackages: ["better-sqlite3"],
   },
   images: {
     remotePatterns: [
