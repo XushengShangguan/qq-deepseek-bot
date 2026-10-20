@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     environment:
       WEBUI_TOKEN: ${WEBUI_TOKEN}
+      # Bot QQ number (set in napcat/.env): after a QQ crash/restart, log back in
+      # with the saved session instead of asking for a new QR scan.
+      ACCOUNT: ${ACCOUNT}
     ports:
       - "127.0.0.1:6099:6099"   # WebUI (QR login, settings)
       - "127.0.0.1:3001:3001"   # OneBot HTTP API, used by the app to send messages
