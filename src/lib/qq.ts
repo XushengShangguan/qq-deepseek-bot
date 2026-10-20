@@ -12,12 +12,20 @@ const NAPCAT_HTTP_URL = (process.env.NAPCAT_HTTP_URL || "http://127.0.0.1:3001")
 // Shared secret: NapCat signs events with it, and we send it as a Bearer token.
 const QQ_TOKEN = process.env.QQ_TOKEN || "";
 const COMPANION = process.env.QQ_COMPANION || "Mina";
+// What she calls each person, e.g. "12345678:阿明,87654321:阿杰".
+// Anyone not listed is called by their QQ nickname.
+const USER_NAMES = new Map(
+  (process.env.QQ_USER_NAMES || "")
+    .split(",")
+    .map((pair) => pair.split(":").map((s) => s.trim()))
+    .filter(([qq, name]) => qq && name) as [string, string][]
+);
 const ALLOWED_USERS = new Set(
   (process.env.QQ_ALLOWED_USERS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
 // People often send several short messages in a row; wait this long for more
 // before replying, and answer them together.
-const DEBOUNCE_MS = Number(process.env.QQ_DEBOUNCE_MS || 2000);
+const DEBOUNCE_MS = Number(process.env.QQ_DEBOUNCE_MS || 1200);
 
 type Segment = { type: string; data?: Record<string, any> };
 
@@ -134,7 +142,7 @@ export function handleIncoming(event: OneBotEvent): string | null {
   });
 
   const userName =
-    process.env.QQ_USER_NAME || event.sender?.nickname || "你";
+    USER_NAMES.get(qq) || event.sender?.nickname || "你";
   const entry = pending.get(qq);
   if (entry) {
     clearTimeout(entry.timer);
@@ -145,7 +153,8 @@ export function handleIncoming(event: OneBotEvent): string | null {
     pending.delete(qq);
     try {
       const combined = (await Promise.all(next.parts)).filter(Boolean).join("\n");
-      if (combined) await replyTo(qq, next.userName, combined);
+      // Count "reading time" from when the last message arrived, not from now.
+      if (combined) await replyTo(qq, next.userName, combined, Date.now() - DEBOUNCE_MS);
     } catch (err) {
       console.error(`QQ reply to ${qq} failed`, err);
     }
@@ -154,22 +163,34 @@ export function handleIncoming(event: OneBotEvent): string | null {
   return null;
 }
 
-async function replyTo(qq: string, userName: string, text: string) {
+async function replyTo(qq: string, userName: string, text: string, receivedAt: number) {
   console.log(`QQ ${qq} -> ${text}`);
+  const t0 = Date.now();
   const reply = await handleMessage({
     userId: `qq:${qq}`,
     userName,
     companion: COMPANION,
     text,
   });
-  await sendInPieces(qq, reply);
+  const generated = Date.now() - t0;
+  await sendInPieces(qq, reply, { receivedAt, incoming: text });
+  console.log(`QQ ${qq} <- replied (generate ${generated}ms, total ${Date.now() - t0}ms)`);
 }
 
 // ---------- sending ----------
 
-async function callNapCat(action: string, params: Record<string, unknown>) {
+// NapCat occasionally hangs on a send (QQ client stalls); don't let one stuck
+// message hold up the rest of the reply for a minute.
+const SEND_TIMEOUT_MS = 10000;
+
+async function callNapCat(
+  action: string,
+  params: Record<string, unknown>,
+  timeoutMs = SEND_TIMEOUT_MS
+) {
   const res = await fetch(`${NAPCAT_HTTP_URL}/${action}`, {
     method: "POST",
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       "Content-Type": "application/json",
       ...(QQ_TOKEN ? { Authorization: `Bearer ${QQ_TOKEN}` } : {}),
@@ -185,6 +206,16 @@ async function callNapCat(action: string, params: Record<string, unknown>) {
 
 export function sendPrivateMessage(qq: string, text: string) {
   return callNapCat("send_private_msg", { user_id: Number(qq), message: text });
+}
+
+/** Is the bot account still logged in? */
+async function isOnline(): Promise<boolean> {
+  try {
+    const data = await callNapCat("get_status", {}, 5000);
+    return data.data?.online === true;
+  } catch {
+    return false;
+  }
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -224,17 +255,55 @@ export function splitIntoMessages(reply: string): string[] {
     .filter(Boolean);
 }
 
-/** Typing time for one message: roughly reading + typing speed, with some jitter. */
-function typingDelay(text: string) {
-  const base = 700 + text.length * 180;
-  return Math.min(5000, base) * (0.8 + Math.random() * 0.4);
+// Pace replies like a person on a phone: read the message, then type each
+// line at a human speed (pinyin input is a few characters per second).
+const TYPING_CPS = Number(process.env.QQ_TYPING_SPEED || 4);
+
+const jitter = () => 0.75 + Math.random() * 0.5;
+
+/** Time to read the incoming message before starting to type. */
+function readingDelay(incoming: string) {
+  return Math.min(3000, 400 + incoming.length * 60) * jitter();
 }
 
-/** Send a reply as several short QQ messages with natural pauses in between. */
-export async function sendInPieces(qq: string, reply: string) {
+/** Time to type one message. */
+function typingDelay(text: string) {
+  // Emoticons/emoji are picked from the keyboard, not typed: count each run of
+  // symbols as one keystroke.
+  const keystrokes = text.replace(/[^\p{Script=Han}\p{L}\p{N}]+/gu, "·").length;
+  return Math.min(8000, 500 + (keystrokes / TYPING_CPS) * 1000) * jitter();
+}
+
+/**
+ * Send a reply as several short QQ messages with human pauses in between.
+ * The first message waits for reading + typing time measured from when the
+ * user's message arrived (time already spent generating counts toward it).
+ */
+export async function sendInPieces(
+  qq: string,
+  reply: string,
+  timing?: { receivedAt: number; incoming: string }
+) {
   const pieces = splitIntoMessages(reply);
   for (let i = 0; i < pieces.length; i++) {
-    if (i > 0) await sleep(typingDelay(pieces[i]));
-    await sendPrivateMessage(qq, pieces[i]);
+    if (i === 0 && timing) {
+      const due = timing.receivedAt + readingDelay(timing.incoming) + typingDelay(pieces[0]);
+      await sleep(Math.max(0, due - Date.now()));
+    } else if (i > 0) {
+      await sleep(typingDelay(pieces[i]));
+    }
+    try {
+      await sendPrivateMessage(qq, pieces[i]);
+    } catch (err) {
+      // No blind retry: a timed-out send often still goes through, and a
+      // duplicated message looks more robotic than a missing one.
+      console.log(`WARNING: QQ message not sent: ${pieces[i]}`, String(err));
+      if (!(await isOnline())) {
+        console.log(
+          "WARNING: 机器人 QQ 号已掉线，请打开 http://127.0.0.1:6099/webui 重新扫码登录"
+        );
+        return;
+      }
+    }
   }
 }
