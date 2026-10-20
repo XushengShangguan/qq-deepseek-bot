@@ -9,6 +9,14 @@ import {
   type Session,
 } from "./memory";
 import {
+  COMPANION_TIMEZONE,
+  DEFAULT_USER_TIMEZONE,
+  cityName,
+  describeDifference,
+  formatDate,
+  formatNow,
+} from "./time";
+import {
   describeRelationship,
   getRecentEvents,
   getRelationshipState,
@@ -24,11 +32,8 @@ export type IncomingMessage = {
   userName: string;
   companion: string;
   text: string;
+  userTimezone?: string; // IANA name, e.g. "Asia/Tokyo"; defaults to this machine's
 };
-
-function formatDate(ts: number) {
-  return new Date(ts).toLocaleDateString("zh-CN");
-}
 
 export function buildCompanionPrompt(args: {
   companion: Companion;
@@ -36,8 +41,11 @@ export function buildCompanionPrompt(args: {
   memories: Memory[];
   relationship: RelationshipState;
   events: StoredEvent[];
+  userTimezone?: string;
 }): string {
   const { companion: c, userName, memories, relationship, events } = args;
+  const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
+  const difference = describeDifference(userTz, COMPANION_TIMEZONE);
   const sections = [
     `你是${c.name}，正在和${userName}聊天。\n\n${c.preamble}`,
   ];
@@ -65,7 +73,7 @@ export function buildCompanionPrompt(args: {
   if (events.length) {
     sections.push(
       `## 你们最近之间发生的事\n` +
-        events.map((e) => `- ${formatDate(e.created_at)}：${e.event}`).join("\n")
+        events.map((e) => `- ${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.event}`).join("\n")
     );
   }
   sections.push(`## 回复要求
@@ -82,7 +90,13 @@ export function buildCompanionPrompt(args: {
   啊？
   怎么又被骂了
   过来抱抱 (｡•́︿•̀｡)
-- 现在是 ${new Date().toLocaleString("zh-CN")}。`);
+- 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}，作息、上课、吃饭都按你自己的时间来。
+${
+  difference
+    ? `- ${userName}现在在${cityName(userTz)}，那边是 ${formatNow(userTz)}（${difference}）。` +
+      `你知道你们有时差；对方说的"现在""今晚""明早"是按${cityName(userTz)}时间，聊时间时要分清是谁那边。`
+    : `- ${userName}和你在同一个时区。`
+}`);
   return sections.join("\n\n");
 }
 
@@ -98,6 +112,7 @@ async function prepareTurn(msg: IncomingMessage) {
     memories: retrieveMemories(session, msg.text),
     relationship: getRelationshipState(session),
     events: getRecentEvents(session),
+    userTimezone: msg.userTimezone,
   });
   return { session, system, recentMessages };
 }
@@ -108,6 +123,7 @@ function finishTurn(session: Session, msg: IncomingMessage, reply: string) {
   extractAndUpdateMemory({
     session,
     userName: msg.userName,
+    userTimezone: msg.userTimezone,
     userText: msg.text,
     assistantText: reply,
   }).catch((err) => console.error("memory extraction failed", err));

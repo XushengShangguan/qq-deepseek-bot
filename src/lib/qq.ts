@@ -20,6 +20,13 @@ const USER_NAMES = new Map(
     .map((pair) => pair.split(":").map((s) => s.trim()))
     .filter(([qq, name]) => qq && name) as [string, string][]
 );
+// Each person's timezone, e.g. "12345678:Asia/Tokyo". Unlisted = this machine's.
+const USER_TIMEZONES = new Map(
+  (process.env.QQ_USER_TIMEZONES || "")
+    .split(",")
+    .map((pair) => pair.split(":").map((s) => s.trim()))
+    .filter(([qq, tz]) => qq && tz) as [string, string][]
+);
 const ALLOWED_USERS = new Set(
   (process.env.QQ_ALLOWED_USERS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
@@ -171,6 +178,7 @@ async function replyTo(qq: string, userName: string, text: string, receivedAt: n
     userName,
     companion: COMPANION,
     text,
+    userTimezone: USER_TIMEZONES.get(qq),
   });
   const generated = Date.now() - t0;
   await sendInPieces(qq, reply, { receivedAt, incoming: text });

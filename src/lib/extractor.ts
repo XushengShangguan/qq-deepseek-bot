@@ -1,4 +1,5 @@
 import { getLLM } from "./llm";
+import { DEFAULT_USER_TIMEZONE, cityName, formatNow } from "./time";
 import { addMemory, listMemories, type NewMemory, type Session } from "./memory";
 import {
   recordRelationshipEvent,
@@ -53,6 +54,7 @@ function isTrivial(text: string) {
 export async function extractAndUpdateMemory(args: {
   session: Session;
   userName: string;
+  userTimezone?: string;
   userText: string;
   assistantText: string;
 }) {
@@ -63,7 +65,9 @@ export async function extractAndUpdateMemory(args: {
     .map((m) => `- ${m.content}`)
     .join("\n");
 
-  const prompt = `今天是 ${new Date().toLocaleDateString("zh-CN")}。
+  // Dates the user mentions ("下周三") are relative to the user's own clock.
+  const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
+  const prompt = `用户在${cityName(userTz)}，用户那边现在是 ${formatNow(userTz)}。
 用户的称呼：${args.userName}
 
 已经记住的内容：
