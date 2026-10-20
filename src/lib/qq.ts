@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { handleMessage } from "./conversation";
+import { describeImage, qqFaceName } from "./media";
 
 // QQ channel via NapCat (OneBot 11). Only converts QQ <-> internal format and
 // sends replies; persona and memory logic stay in conversation.ts (plan §5).
@@ -43,36 +44,72 @@ export function verifySignature(rawBody: string, header: string | null): boolean
 }
 
 const PLACEHOLDERS: Record<string, string> = {
-  image: "[图片]",
-  mface: "[表情包]",
-  face: "[表情]",
   record: "[语音]",
   video: "[视频]",
   file: "[文件]",
 };
 
-/** Flatten a OneBot message (array or CQ-code string) into plain text. */
-export function extractText(event: OneBotEvent): string {
-  const msg = event.message;
-  if (Array.isArray(msg)) {
-    return msg
-      .map((seg) =>
-        seg.type === "text" ? String(seg.data?.text ?? "") : PLACEHOLDERS[seg.type] ?? ""
-      )
-      .join("")
-      .trim();
-  }
-  const raw = typeof msg === "string" ? msg : event.raw_message ?? "";
-  return raw
-    .replace(/\[CQ:(\w+)[^\]]*\]/g, (_, type: string) => PLACEHOLDERS[type] ?? "")
+function unescapeCQ(s: string) {
+  return s
     .replace(/&#91;/g, "[")
     .replace(/&#93;/g, "]")
     .replace(/&#44;/g, ",")
-    .replace(/&amp;/g, "&")
-    .trim();
+    .replace(/&amp;/g, "&");
 }
 
-type Pending = { texts: string[]; userName: string; timer: NodeJS.Timeout };
+// QQ sends stickers as image segments with sub_type 1 (or a summary like "[动画表情]").
+function isSticker(data: Record<string, any> = {}) {
+  return Number(data.sub_type) === 1 || /表情/.test(String(data.summary ?? ""));
+}
+
+async function segmentToText(seg: Segment): Promise<string> {
+  const data = seg.data ?? {};
+  switch (seg.type) {
+    case "text":
+      return String(data.text ?? "");
+    case "image":
+      return describeImage(data.url, isSticker(data) ? "sticker" : "photo");
+    case "mface":
+      // Store stickers: describe the picture; the summary (e.g. "[开心]") is the fallback.
+      return data.url
+        ? describeImage(data.url, "sticker")
+        : `[表情包：${String(data.summary ?? "").replace(/[\[\]]/g, "")}]`;
+    case "face":
+      return qqFaceName(data.id);
+    default:
+      return PLACEHOLDERS[seg.type] ?? "";
+  }
+}
+
+// CQ-code string format: "hi[CQ:image,file=x.jpg,url=https://...]".
+function parseCQ(raw: string): Segment[] {
+  const segs: Segment[] = [];
+  const re = /\[CQ:(\w+)((?:,[^\]]*)?)\]/g;
+  let last = 0;
+  for (let m; (m = re.exec(raw)); last = re.lastIndex) {
+    if (m.index > last) segs.push({ type: "text", data: { text: unescapeCQ(raw.slice(last, m.index)) } });
+    const data: Record<string, string> = {};
+    for (const kv of m[2].split(",").filter(Boolean)) {
+      const i = kv.indexOf("=");
+      if (i > 0) data[kv.slice(0, i)] = unescapeCQ(kv.slice(i + 1));
+    }
+    segs.push({ type: m[1], data });
+  }
+  if (last < raw.length) segs.push({ type: "text", data: { text: unescapeCQ(raw.slice(last)) } });
+  return segs;
+}
+
+/** Turn a OneBot message into text; images and stickers become short descriptions. */
+export async function messageToText(event: OneBotEvent): Promise<string> {
+  const msg = event.message;
+  const segs = Array.isArray(msg)
+    ? msg
+    : parseCQ(typeof msg === "string" ? msg : event.raw_message ?? "");
+  const parts = await Promise.all(segs.map(segmentToText));
+  return parts.join("").trim();
+}
+
+type Pending = { parts: Promise<string>[]; userName: string; timer: NodeJS.Timeout };
 const pending = new Map<string, Pending>();
 
 /**
@@ -90,28 +127,35 @@ export function handleIncoming(event: OneBotEvent): string | null {
     return "user not allowed";
   }
 
-  const text = extractText(event);
-  if (!text) return "empty message";
+  // Start describing images right away, in parallel with the debounce wait.
+  const text = messageToText(event).catch((err) => {
+    console.error("could not read QQ message", err);
+    return "";
+  });
 
   const userName =
     process.env.QQ_USER_NAME || event.sender?.nickname || "你";
   const entry = pending.get(qq);
   if (entry) {
     clearTimeout(entry.timer);
-    entry.texts.push(text);
+    entry.parts.push(text);
   }
-  const next: Pending = entry ?? { texts: [text], userName, timer: undefined as any };
-  next.timer = setTimeout(() => {
+  const next: Pending = entry ?? { parts: [text], userName, timer: undefined as any };
+  next.timer = setTimeout(async () => {
     pending.delete(qq);
-    replyTo(qq, next.userName, next.texts.join("\n")).catch((err) =>
-      console.error(`QQ reply to ${qq} failed`, err)
-    );
+    try {
+      const combined = (await Promise.all(next.parts)).filter(Boolean).join("\n");
+      if (combined) await replyTo(qq, next.userName, combined);
+    } catch (err) {
+      console.error(`QQ reply to ${qq} failed`, err);
+    }
   }, DEBOUNCE_MS);
   pending.set(qq, next);
   return null;
 }
 
 async function replyTo(qq: string, userName: string, text: string) {
+  console.log(`QQ ${qq} -> ${text}`);
   const reply = await handleMessage({
     userId: `qq:${qq}`,
     userName,
@@ -145,11 +189,52 @@ export function sendPrivateMessage(qq: string, text: string) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Send each line as its own QQ message, with a short "typing" pause between. */
+// Lines longer than this get broken at sentence ends / commas as a fallback,
+// in case the model writes one long sentence instead of several short messages.
+const MAX_PIECE = 20;
+
+function breakLongLine(line: string): string[] {
+  const out: string[] = [];
+  let rest = line.trim();
+  while (rest.length > MAX_PIECE) {
+    const head = rest.slice(0, MAX_PIECE + 1);
+    let cut = -1;
+    for (const re of [/[。！？!?～~…]+/g, /[，,；;]/g]) {
+      for (const m of Array.from(head.matchAll(re))) {
+        const end = (m.index ?? 0) + m[0].length;
+        if (end >= 5 && end < rest.length) cut = end;
+      }
+      if (cut > 0) break;
+    }
+    if (cut < 0) break;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+/** Split a reply into QQ-sized messages, the way people actually type. */
+export function splitIntoMessages(reply: string): string[] {
+  return reply
+    .split(/\n+/)
+    .flatMap(breakLongLine)
+    // Nobody ends a chat message with "。" or "，".
+    .map((p) => p.replace(/[。，,]+$/u, "").trim())
+    .filter(Boolean);
+}
+
+/** Typing time for one message: roughly reading + typing speed, with some jitter. */
+function typingDelay(text: string) {
+  const base = 700 + text.length * 180;
+  return Math.min(5000, base) * (0.8 + Math.random() * 0.4);
+}
+
+/** Send a reply as several short QQ messages with natural pauses in between. */
 export async function sendInPieces(qq: string, reply: string) {
-  const pieces = reply.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  const pieces = splitIntoMessages(reply);
   for (let i = 0; i < pieces.length; i++) {
-    if (i > 0) await sleep(Math.min(3000, 500 + pieces[i].length * 80));
+    if (i > 0) await sleep(typingDelay(pieces[i]));
     await sendPrivateMessage(qq, pieces[i]);
   }
 }

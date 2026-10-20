@@ -66,4 +66,35 @@ export const claudeProvider: LLMProvider = {
     }
     textOf(await stream.finalMessage());
   },
+
+  async describeImage(dataUrl, prompt) {
+    const match = dataUrl.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/);
+    if (!match) throw new Error("Unsupported image data URL");
+    const final = await getClient()
+      .beta.messages.stream({
+        model: MODEL,
+        max_tokens: 1000,
+        output_config: { effort: EXTRACT_EFFORT },
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: match[1] as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+                  data: match[2],
+                },
+              },
+              { type: "text", text: prompt },
+            ],
+          },
+        ],
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default",
+      })
+      .finalMessage();
+    return textOf(final);
+  },
 };

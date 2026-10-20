@@ -25,10 +25,12 @@ export default function QAModal({
       api: "/api/chat",
       headers: { name },
       onFinish: (prompt, result) => {
+        // One bubble per line, like the separate QQ messages she sends.
+        const pieces = result.split(/\n+/).map((s) => s.trim()).filter(Boolean);
         setLines((l) => [
           ...l,
           { role: "user", text: prompt },
-          { role: "assistant", text: result },
+          ...pieces.map((text) => ({ role: "assistant" as const, text })),
         ]);
         setPending(null);
         setCompletion("");

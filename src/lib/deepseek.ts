@@ -51,6 +51,29 @@ export const deepseekProvider: LLMProvider = {
     return (data.choices?.[0]?.message?.content ?? "").trim();
   },
 
+  // deepseek-flash accepts images in user messages (https://api-docs.deepseek.com/guides/vision).
+  async describeImage(dataUrl, prompt) {
+    const res = await post(
+      JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              // Stickers don't need full resolution; "low" is faster and cheaper.
+              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+            ],
+          },
+        ],
+        max_tokens: 300,
+        thinking: { type: "disabled" },
+      })
+    );
+    const data = await res.json();
+    return (data.choices?.[0]?.message?.content ?? "").trim();
+  },
+
   // Server-sent events: lines of `data: {json}`, ending with `data: [DONE]`.
   async *stream(system, messages, options) {
     const res = await post(requestBody(system, messages, options, true));

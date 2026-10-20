@@ -22,6 +22,8 @@ export interface LLMProvider {
     messages: ChatMessage[],
     options?: GenerateOptions
   ): AsyncIterable<string>;
+  /** Optional vision: answer `prompt` about an image given as a data: URL. */
+  describeImage?(dataUrl: string, prompt: string): Promise<string>;
 }
 
 // No-API provider for testing the UI / SQLite / memory pipeline offline.
@@ -43,6 +45,9 @@ const mockProvider: LLMProvider = {
   },
   async *stream(system, messages, options) {
     yield await this.generate(system, messages, options);
+  },
+  async describeImage() {
+    return "一张图片（mock）";
   },
 };
 
