@@ -6,11 +6,19 @@ services:
     image: mlikiowa/napcat-docker:latest
     container_name: napcat
     restart: unless-stopped
+    # QQ fingerprints the "device" partly by MAC address and hostname. Docker
+    # randomizes both whenever the container is recreated, which looks like the
+    # bot account jumping to a new machine and invites risk-control logouts.
+    # Pin them to the values the account first logged in with.
+    hostname: baffc2ac17c0
+    mac_address: "52:fc:37:40:5b:84"
     environment:
       WEBUI_TOKEN: ${WEBUI_TOKEN}
       # Bot QQ number (set in napcat/.env): after a QQ crash/restart, log back in
       # with the saved session instead of asking for a new QR scan.
       ACCOUNT: ${ACCOUNT}
+      # Also used when NapCat restarts QQ internally (which drops -q).
+      NAPCAT_QUICK_ACCOUNT: ${ACCOUNT}
     ports:
       - "127.0.0.1:6099:6099"   # WebUI (QR login, settings)
       - "127.0.0.1:3001:3001"   # OneBot HTTP API, used by the app to send messages

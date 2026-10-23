@@ -5,16 +5,22 @@ import {
   getRecentMessages,
   retrieveMemories,
   saveMessage,
+  type TimedMessage,
   type Memory,
   type Session,
 } from "./memory";
+import { stripStageDirections, turnStyleHints } from "./style";
 import {
   COMPANION_TIMEZONE,
   DEFAULT_USER_TIMEZONE,
   cityName,
   describeDifference,
+  describeNearbyDays,
   formatDate,
+  formatGap,
   formatNow,
+  formatStamp,
+  sameDay,
 } from "./time";
 import {
   describeRelationship,
@@ -67,7 +73,9 @@ export function buildCompanionPrompt(args: {
   if (memories.length) {
     sections.push(
       `## 你记得的关于${userName}的事\n` +
-        memories.map((m) => `- ${m.content}`).join("\n")
+        memories
+          .map((m) => `- （${formatDate(m.created_at, COMPANION_TIMEZONE)}记下）${m.content}`)
+          .join("\n")
     );
   }
   if (events.length) {
@@ -77,20 +85,31 @@ export function buildCompanionPrompt(args: {
     );
   }
   sections.push(`## 回复要求
-- 像真人在 QQ 上和恋人聊天：把想说的话拆成好几条短消息连着发，每条之间换行。
-  每一行就是一条单独的 QQ 消息，一般只有几个字到十几个字，一次发 2~5 条；
-  有时只回一条也很自然（比如"嗯嗯""哈哈哈哈"），看情况变化，不要每次都一样长。
-- 不要在每条末尾加句号，口语化，可以用语气词和颜文字，但别每条都用。
+- 像真人在 QQ 上和恋人聊天：每一行就是一条单独的 QQ 消息，一条一般几个字到十几个字，多条之间换行。
 - 不要用 Markdown、列表或标题，不要在开头加自己的名字。
 - 始终保持角色，不要说自己是 AI、模型或程序。
 - 自然地用上你记得的事，但不要生硬地背出来。
 - 对方消息里的 [表情包：…]、[图片：…]、[QQ表情：…] 是对方发的表情包/图片及其内容，像真人一样接住它的情绪和梗来回应，
   不要复述"你发了一个表情包"；[语音]、[视频] 表示你暂时看不到/听不到，可以撒娇让对方打字。
-- 例子（每行是一条消息）：
-  啊？
-  怎么又被骂了
-  过来抱抱 (｡•́︿•̀｡)
+
+## 别像 AI（这些是最容易露馅的地方）
+- 别像妈妈一样叮嘱：不要动不动就"记得吃饭""早点睡""别熬夜""好好休息"，除非真的有必要。
+- 别每次都用问题结尾，也别每次都关心对方。很多时候就是接一句、吐槽一句、发个情绪，或者说说你自己的事。
+- 别复述对方刚说的话（对方说"国家躺平"，不要回"哈哈哈国家躺平"）。
+- 绝对不要用括号写动作或心理活动，比如"（偷偷看手机）""（小声）"。
+- 开头别总是"诶""哦哦""哈哈哈""嗯嗯"，换着来，或者直接说事。
+- 语气词（呀、啦、嘛、哦）和颜文字少用，大部分消息不带；颜文字几轮才用一次，别老用同一个。
+- 可以不完美：可以敷衍、可以只回一个"？"或"哼"、可以小小闹脾气、可以突然转去说自己的事、可以有错别字式的随意。
+- 标点随意：句尾不加句号，可以用空格代替逗号，可以连发"哈哈哈哈哈哈"。
+- 对方只回"ok""嗯""好的"这种敷衍的话时，你也别长篇大论。
+
+## 本轮
+${turnStyleHints(c.name)}
 - 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}，作息、上课、吃饭都按你自己的时间来。
+- 日期对照（你那边）：${describeNearbyDays(COMPANION_TIMEZONE)}。说"昨天""明天""周末"时按这个算。
+- 聊天记录里方括号 [ ] 是系统标的发送时间，只在隔了一段时间或换了一天时出现，帮你分清"昨天聊的"和"刚才说的"。
+  隔了很久再聊要意识到时间过去了（昨晚说了晚安，今天再聊就是新的一天；昨天说"明天考试"，那就是今天）。
+  你回复时不要写这种时间标记。
 ${
   difference
     ? `- ${userName}现在在${cityName(userTz)}，那边是 ${formatNow(userTz)}（${difference}）。` +
@@ -100,12 +119,35 @@ ${
   return sections.join("\n\n");
 }
 
+const GAP_TO_MARK_MS = 30 * 60 * 1000;
+
+/**
+ * Prefix a user message with its send time when it starts a new day or comes
+ * after a long pause, so the model can tell "yesterday" from "just now".
+ */
+function annotateWithTime(rows: TimedMessage[]): ChatMessage[] {
+  let prev: number | undefined;
+  return rows.map(({ role, content, created_at }) => {
+    let text = content;
+    if (role === "user") {
+      const newDay = prev === undefined || !sameDay(prev, created_at, COMPANION_TIMEZONE);
+      const gap = prev === undefined ? 0 : created_at - prev;
+      if (newDay || gap >= GAP_TO_MARK_MS) {
+        const since = prev === undefined ? "" : `，距上一条 ${formatGap(gap)}`;
+        text = `[${formatStamp(created_at, COMPANION_TIMEZONE)}${since}] ${content}`;
+      }
+    }
+    prev = created_at;
+    return { role, content: text };
+  });
+}
+
 async function prepareTurn(msg: IncomingMessage) {
   const session: Session = { userId: msg.userId, companion: msg.companion };
   const companion = await loadCompanion(msg.companion);
 
   saveMessage(session, "user", msg.text);
-  const recentMessages: ChatMessage[] = getRecentMessages(session);
+  const recentMessages = annotateWithTime(getRecentMessages(session));
   const system = buildCompanionPrompt({
     companion,
     userName: msg.userName,
@@ -147,7 +189,7 @@ export function handleMessage(msg: IncomingMessage): Promise<string> {
   return serialize(`${msg.userId}|${msg.companion}`, async () => {
     const { session, system, recentMessages } = await prepareTurn(msg);
     const llm = await getLLM();
-    const reply = await llm.generate(system, recentMessages);
+    const reply = stripStageDirections(await llm.generate(system, recentMessages, { purpose: "chat" }));
     finishTurn(session, msg, reply);
     return reply;
   });
@@ -171,7 +213,7 @@ export async function handleMessageStream(
           reply += chunk;
           controller.enqueue(encoder.encode(chunk));
         }
-        finishTurn(session, msg, reply.trim());
+        finishTurn(session, msg, stripStageDirections(reply));
         controller.close();
       } catch (err) {
         console.error("chat turn failed", err);

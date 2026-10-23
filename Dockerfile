@@ -1,45 +1,32 @@
-# syntax = docker/dockerfile:1
+# Companion app (Next.js) for running on a server next to NapCat.
+# Built by deploy/compose.yaml; see deploy/README.md.
 
-# Adjust NODE_VERSION as desired
-ARG NODE_VERSION=18.8.0
-FROM node:${NODE_VERSION}-slim as base
+ARG NODE_IMAGE=node:20-bookworm-slim
 
-LABEL fly_launch_runtime="Next.js"
-
-# Next.js app lives here
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
+# npm registry mirror (the default registry is slow from mainland China).
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm config set registry ${NPM_REGISTRY}
+# Toolchain in case better-sqlite3 has no prebuilt binary for this platform.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Set production environment
+FROM ${NODE_IMAGE}
+WORKDIR /app
 ENV NODE_ENV=production
-
-
-# Throw-away build stage to reduce size of final image
-FROM base as build
-
-# Install packages needed to build node modules
-RUN apt-get update -qq && \
-    apt-get install -y python-is-python3 pkg-config build-essential 
-
-# Install node modules
-COPY --link package-lock.json package.json ./
-RUN npm ci --include=dev
-
-# Copy application code
-COPY --link . .
-
-# Build application
-RUN npm run build
-
-# Remove development dependencies
-RUN npm prune --omit=dev
-
-
-# Final stage for app image
-FROM base
-
-# Copy built application
-COPY --from=build /app /app
-
-# Start the server by default, this can be overwritten at runtime
+# Next 13.4's render workers listen on "localhost"; Node 20 resolves that to
+# ::1 first while the router connects to 127.0.0.1 -> ECONNREFUSED in Linux
+# containers. Prefer IPv4.
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
+COPY --from=build /app/package.json /app/next.config.js ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/companions ./companions
 EXPOSE 3000
-CMD [ "npm", "run", "start" ]
+CMD ["node_modules/.bin/next", "start", "-p", "3000"]

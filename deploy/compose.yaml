@@ -1,0 +1,42 @@
+# Production stack: companion app + NapCat on one server.
+# Run from this folder:  docker compose up -d --build
+# Needs ../.env.local (app settings) and ./.env (WEBUI_TOKEN, ACCOUNT); see README.md.
+# Nothing is exposed to the internet: WebUI and the debug chat bind to 127.0.0.1,
+# reach them through an SSH tunnel.
+services:
+  app:
+    build: ..
+    container_name: companion-app
+    restart: unless-stopped
+    env_file: ../.env.local
+    environment:
+      # Inside the compose network, NapCat is reachable by service name.
+      NAPCAT_HTTP_URL: http://napcat:3001
+      DB_PATH: /app/data/companion.db
+    volumes:
+      - ../data:/app/data
+      # Mounted so persona/style edits apply without rebuilding the image.
+      - ../companions:/app/companions:ro
+    ports:
+      - "127.0.0.1:3000:3000"   # browser debug chat / memory view
+
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    # Same device fingerprint as on the Mac (see napcat/compose.yaml).
+    hostname: baffc2ac17c0
+    mac_address: "52:fc:37:40:5b:84"
+    environment:
+      WEBUI_TOKEN: ${WEBUI_TOKEN}
+      # Quick-login the bot on container start (-q) ...
+      ACCOUNT: ${ACCOUNT}
+      # ... and also when NapCat restarts QQ internally after a crash/logout,
+      # which does not pass -q again.
+      NAPCAT_QUICK_ACCOUNT: ${ACCOUNT}
+    ports:
+      - "127.0.0.1:6099:6099"   # WebUI (QR login)
+    volumes:
+      - ../napcat/data/qq:/app/.config/QQ
+      - ../napcat/data/config:/app/napcat/config
+      - ../napcat/data/plugins:/app/napcat/plugins

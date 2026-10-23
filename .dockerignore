@@ -33,3 +33,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# runtime data and secrets: mounted / passed at run time, never baked in
+/data/
+/napcat/
+/deploy/
+.env*
+.git

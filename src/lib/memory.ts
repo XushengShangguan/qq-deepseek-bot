@@ -41,17 +41,19 @@ export function saveMessage(
     .run(userId, companion, role, content, Date.now());
 }
 
+export type TimedMessage = ChatMessage & { created_at: number };
+
 export function getRecentMessages(
   { userId, companion }: Session,
   limit = RECENT_LIMIT
-): ChatMessage[] {
+): TimedMessage[] {
   const rows = getDb()
     .prepare(
-      `SELECT role, content FROM messages
+      `SELECT role, content, created_at FROM messages
        WHERE user_id = ? AND companion = ?
        ORDER BY id DESC LIMIT ?`
     )
-    .all(userId, companion, limit) as ChatMessage[];
+    .all(userId, companion, limit) as TimedMessage[];
   rows.reverse();
   // Model APIs expect the conversation to open with a user turn.
   while (rows.length && rows[0].role !== "user") rows.shift();

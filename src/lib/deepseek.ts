@@ -18,6 +18,10 @@ function requestBody(
     // Thinking mode is on by default; casual chat and memory extraction don't
     // need it, and turning it off makes replies much faster and cheaper.
     thinking: { type: process.env.DEEPSEEK_THINKING === "on" ? "enabled" : "disabled" },
+    // Higher temperature = more varied wording in chat (DeepSeek suggests ~1.3
+    // for conversation); keep extraction deterministic. Ignored in thinking mode.
+    temperature:
+      options.purpose === "extract" ? 0.3 : Number(process.env.DEEPSEEK_TEMPERATURE || 1.3),
     ...(options.purpose === "extract"
       ? { response_format: { type: "json_object" } }
       : {}),

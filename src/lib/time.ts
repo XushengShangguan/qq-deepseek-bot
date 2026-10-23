@@ -42,6 +42,53 @@ export function formatNow(tz: string, now = new Date()) {
   });
 }
 
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+/** Calendar parts of a moment in a timezone. */
+function partsIn(ts: number, tz: string) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "numeric", day: "numeric",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(ts)).map((x) => [x.type, x.value])
+  );
+  const y = Number(p.year), m = Number(p.month), d = Number(p.day);
+  return { y, m, d, hh: p.hour, mm: p.minute, weekday: WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] };
+}
+
+/** Same calendar day in `tz`? */
+export function sameDay(a: number, b: number, tz: string) {
+  const x = partsIn(a, tz), y = partsIn(b, tz);
+  return x.y === y.y && x.m === y.m && x.d === y.d;
+}
+
+/** e.g. "10月21日 周二 23:31". */
+export function formatStamp(ts: number, tz: string) {
+  const p = partsIn(ts, tz);
+  return `${p.m}月${p.d}日 ${p.weekday} ${p.hh}:${p.mm}`;
+}
+
+/** e.g. "10 小时" / "2 天" / "40 分钟". */
+export function formatGap(ms: number) {
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `${min} 分钟`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h} 小时`;
+  return `${Math.round(h / 24)} 天`;
+}
+
+/** "今天 10月22日 周三；昨天 10月21日 周二；…" relative-day cheat sheet. */
+export function describeNearbyDays(tz: string, now = Date.now()) {
+  const DAY = 86400000;
+  const label = (ts: number) => {
+    const p = partsIn(ts, tz);
+    return `${p.m}月${p.d}日 ${p.weekday}`;
+  };
+  return [
+    ["前天", -2], ["昨天", -1], ["今天", 0], ["明天", 1], ["后天", 2],
+  ].map(([name, off]) => `${name} ${label(now + (off as number) * DAY)}`).join("；");
+}
+
 export function formatDate(ts: number, tz: string) {
   return new Date(ts).toLocaleDateString("zh-CN", { timeZone: tz });
 }
