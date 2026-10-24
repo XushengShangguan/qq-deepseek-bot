@@ -10,17 +10,22 @@
 
 ## 2. 准备服务器（只做一次）
 
-拿到镜像加速地址：阿里云控制台 → 容器镜像服务 ACR → 镜像工具 → 镜像加速器，复制形如 `https://xxxx.mirror.aliyuncs.com` 的地址。
-
 在 Mac 上：
 
 ```bash
 cd ~/Desktop/女朋友/companion-app
-scp deploy/setup-server.sh root@服务器IP:/root/
-ssh root@服务器IP 'bash /root/setup-server.sh https://xxxx.mirror.aliyuncs.com'
+ssh-copy-id -i ~/.ssh/id_ed25519.pub root@服务器IP     # 输一次 root 密码，之后用钥匙登录
+ssh root@服务器IP 'bash -s' < deploy/setup-server.sh
 ```
 
-会装好 Docker、加 2G 虚拟内存（swap）、配置镜像加速。
+会装好 Docker、加 2G 虚拟内存（swap）、配置 DaoCloud 镜像源，并**关掉 SSH 密码登录**（只能用钥匙登录）。
+
+Docker 镜像在国内经常拉不下来（2026-10 时阿里云个人加速器对这两个镜像都返回 not found）。如果 `docker compose up` 拉镜像失败，在服务器上手动拉再改名：
+
+```bash
+docker pull dockerproxy.net/mlikiowa/napcat-docker:latest
+docker tag dockerproxy.net/mlikiowa/napcat-docker:latest mlikiowa/napcat-docker:latest
+```
 
 ## 3. 迁移（只做一次）
 

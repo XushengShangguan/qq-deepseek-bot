@@ -8,6 +8,10 @@ WORKDIR /app
 # npm registry mirror (the default registry is slow from mainland China).
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 RUN npm config set registry ${NPM_REGISTRY}
+# Debian package mirror (deb.debian.org crawls from mainland China; Aliyun's
+# mirror is on its internal network for ECS).
+ARG APT_MIRROR=mirrors.aliyun.com
+RUN sed -i "s#deb.debian.org#${APT_MIRROR}#g" /etc/apt/sources.list.d/debian.sources
 # Toolchain in case better-sqlite3 has no prebuilt binary for this platform.
 RUN apt-get update -qq && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*

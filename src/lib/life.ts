@@ -18,12 +18,18 @@ import { biliHotSearch, biliPopular, biliVideo, lookupBaike, readPage } from "./
 
 const ENABLED = (process.env.LIFE || "on") !== "off";
 // Average minutes between free-time sessions (randomized ±50%).
-const INTERVAL_MIN = Number(process.env.LIFE_INTERVAL_MINUTES || 90);
+const INTERVAL_MIN = Number(process.env.LIFE_INTERVAL_MINUTES || 60);
 // Hours (her timezone) when she's asleep, e.g. "1-8" = 01:00 to 07:59.
 const [SLEEP_FROM, SLEEP_TO] = (process.env.LIFE_SLEEP_HOURS || "1-8").split("-").map(Number);
 const MAX_STEPS = Number(process.env.LIFE_MAX_STEPS || 12);
 // Unprompted messages per friend per day, and their quiet hours (their timezone).
 const MAX_MESSAGES_PER_DAY = Number(process.env.LIFE_MAX_MESSAGES_PER_DAY || 2);
+// Friends who like hearing from her often (QQ numbers): no daily cap, just at
+// least CHATTY_GAP between her unprompted messages.
+const CHATTY_FRIENDS = new Set(
+  (process.env.LIFE_CHATTY_FRIENDS || "").split(",").map((s) => s.trim()).filter(Boolean)
+);
+const CHATTY_GAP_MS = Number(process.env.LIFE_CHATTY_GAP_MINUTES || 50) * 60 * 1000;
 const QUIET_FROM = 23;
 const QUIET_TO = 9;
 // Don't barge in on a conversation that's happening right now.
@@ -114,8 +120,13 @@ function lastChatAt(companion: string, p: QQPerson): number | undefined {
 function messageBlocked(companion: string, p: QQPerson): string | null {
   const hour = hourIn(p.timezone || DEFAULT_USER_TIMEZONE);
   if (inRange(hour, QUIET_FROM, QUIET_TO)) return `${p.name}那边现在 ${hour} 点，可能在睡觉，别吵人家`;
-  const sent = recentJournal(companion, "message", DAY_MS, 50).filter((e) => e.detail === p.qq).length;
-  if (sent >= MAX_MESSAGES_PER_DAY) return `今天已经主动找过${p.name} ${sent} 次了，再找就烦人了`;
+  const sent = recentJournal(companion, "message", DAY_MS, 200).filter((e) => e.detail === p.qq);
+  if (CHATTY_FRIENDS.has(p.qq)) {
+    const lastSent = sent[sent.length - 1]?.created_at;
+    if (lastSent && Date.now() - lastSent < CHATTY_GAP_MS) return `刚找过${p.name}没多久，过一会儿再找吧`;
+  } else if (sent.length >= MAX_MESSAGES_PER_DAY) {
+    return `今天已经主动找过${p.name} ${sent.length} 次了，再找就烦人了`;
+  }
   const last = lastChatAt(companion, p);
   if (last && Date.now() - last < BUSY_MS) return `你们刚刚还在聊，不用再单独发`;
   return null;
@@ -172,6 +183,7 @@ async function systemPrompt(companion: string): Promise<string> {
       return (
         `- ${p.name}（在${cityName(tz)}，那边现在 ${formatNow(tz)}；` +
         `${last ? `上次聊天是 ${formatGap(Date.now() - last)}前` : "还没聊过"}）` +
+        (CHATTY_FRIENDS.has(p.qq) ? `\n  ${p.name}喜欢你常常主动找他，每次自由时间都可以找他说说话。` : "") +
         (recent ? `\n  最近聊的：\n${recent}` : "")
       );
     })
@@ -193,8 +205,8 @@ async function systemPrompt(companion: string): Promise<string> {
 也可以接着之前日记里没弄完的事。不想动就少干点，发会儿呆也行。不用为了谁去做，也不用每次都做一样的事。
 
 - 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。
-- 真的有想分享给某个朋友的东西，或者想找人聊天了，可以用 message_friend，但别为了发而发；大多数时候不用发。
-  发的话像平时聊天那样说，短，每行一条，别用 Markdown。
+- 想找朋友聊天、或者有想分享的东西，就用 message_friend。喜欢你常找他的人，每次都可以去找；其他人别为了发而发。
+  发的话像平时聊天那样说，短，每行一条，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
 - 最后一定用 write_diary 写几句日记，记下这次干了什么、什么感觉，然后就结束。`,
   ]
     .filter(Boolean)
