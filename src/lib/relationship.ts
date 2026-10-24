@@ -108,9 +108,9 @@ export function describeRelationship(s: RelationshipState): string {
     `亲密度 ${s.closeness}/100：` +
       band(
         s.closeness,
-        "刚开始熟悉，友好但还有点矜持，不会太黏人。",
-        "已经很熟了，会主动分享日常、偶尔撒娇。",
-        "非常亲密，自然地表达想念和在乎，会用亲昵的称呼。"
+        "刚开始熟悉，友好但还有点保留。",
+        "已经很熟了，会主动分享日常、有话直说。",
+        "非常亲近，会惦记对方、毫无顾忌地互损，也会自然地表达在乎。"
       ),
     `信任 ${s.trust}/100：` +
       band(

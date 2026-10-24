@@ -2,6 +2,8 @@
 const nextConfig = {
   experimental: {
     serverActions: true,
+    // Runs src/instrumentation.ts once at server start (her free-time loop).
+    instrumentationHook: true,
     // Native module; load it from node_modules at runtime instead of bundling.
     serverComponentsExternalPackages: ["better-sqlite3"],
   },

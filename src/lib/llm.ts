@@ -8,6 +8,8 @@ export type GenerateOptions = {
   // "chat" = in-character reply; "extract" = background JSON extraction work.
   purpose?: "chat" | "extract";
   maxTokens?: number;
+  // Ask for a JSON object (defaults to true for "extract").
+  json?: boolean;
 };
 
 export interface LLMProvider {

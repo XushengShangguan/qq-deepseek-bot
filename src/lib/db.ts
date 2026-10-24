@@ -55,6 +55,41 @@ CREATE TABLE IF NOT EXISTS relationship_events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_session
   ON relationship_events (user_id, companion, created_at);
+
+-- The companion's own growth, shared across everyone she talks to:
+-- notes about herself picked up turn by turn, periodically folded into a
+-- self-portrait. Old portraits are kept as a growth log.
+CREATE TABLE IF NOT EXISTS self_notes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion     TEXT    NOT NULL,
+  content       TEXT    NOT NULL,
+  created_at    INTEGER NOT NULL,
+  consolidated  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_self_notes
+  ON self_notes (companion, consolidated, id);
+
+CREATE TABLE IF NOT EXISTS self_portraits (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion   TEXT    NOT NULL,
+  text        TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_self_portraits
+  ON self_portraits (companion, id);
+
+-- What she does on her own time (life.ts): diary entries, and a log of
+-- messages she sent unprompted (kind = 'message', detail = QQ number).
+CREATE TABLE IF NOT EXISTS journal (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion   TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  content     TEXT    NOT NULL,
+  detail      TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_journal
+  ON journal (companion, kind, created_at);
 `;
 
 // Next.js dev mode re-evaluates modules on every change; keep one connection.

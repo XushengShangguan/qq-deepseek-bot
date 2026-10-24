@@ -9,7 +9,10 @@ import {
   type Memory,
   type Session,
 } from "./memory";
+import { recentDiary } from "./journal";
+import { getSelf, type SelfState } from "./self";
 import { stripStageDirections, turnStyleHints } from "./style";
+import { getTrends } from "./trends";
 import {
   COMPANION_TIMEZONE,
   DEFAULT_USER_TIMEZONE,
@@ -47,9 +50,12 @@ export function buildCompanionPrompt(args: {
   memories: Memory[];
   relationship: RelationshipState;
   events: StoredEvent[];
+  self?: SelfState;
+  trends?: string;
+  diary?: string[];
   userTimezone?: string;
 }): string {
-  const { companion: c, userName, memories, relationship, events } = args;
+  const { companion: c, userName, memories, relationship, events, self, trends, diary } = args;
   const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
   const difference = describeDifference(userTz, COMPANION_TIMEZONE);
   const sections = [
@@ -66,6 +72,21 @@ export function buildCompanionPrompt(args: {
   }
   if (c.backstory) {
     sections.push(`## 你的背景\n${c.backstory}`);
+  }
+  if (self?.portrait) {
+    sections.push(`## 你现在的样子\n这是你这些日子自己慢慢长成的样子，比上面最初的设定更新，两者不一致时以这里为准：\n${self.portrait}`);
+  }
+  if (self?.notes.length) {
+    sections.push(`## 你最近的一些变化\n${self.notes.map((n) => `- ${n}`).join("\n")}`);
+  }
+  if (diary?.length) {
+    sections.push(`## 你最近自己干了什么（你的日记）
+聊天时可以自然地提起，就像跟朋友说"我刚刚在看…"。\n${diary.map((d) => `- ${d}`).join("\n")}`);
+  }
+  if (trends) {
+    sections.push(`## 你最近刷手机看到的
+这些是你自己刷到的，聊到相关的就自然接上，觉得有意思也可以顺嘴提一句；别硬塞，别像念新闻。
+${trends}`);
   }
   sections.push(
     `## 你和${userName}现在的关系\n${describeRelationship(relationship)}`
@@ -85,9 +106,9 @@ export function buildCompanionPrompt(args: {
     );
   }
   sections.push(`## 回复要求
-- 像真人在 QQ 上和恋人聊天：每一行就是一条单独的 QQ 消息，一条一般几个字到十几个字，多条之间换行。
+- 像真人在 QQ 上和熟人聊天：每一行就是一条单独的 QQ 消息，一条一般几个字到十几个字，多条之间换行。
 - 不要用 Markdown、列表或标题，不要在开头加自己的名字。
-- 始终保持角色，不要说自己是 AI、模型或程序。
+- 始终是你自己，不要用助手、客服的口吻说话，不要说"有什么可以帮你"。
 - 自然地用上你记得的事，但不要生硬地背出来。
 - 对方消息里的 [表情包：…]、[图片：…]、[QQ表情：…] 是对方发的表情包/图片及其内容，像真人一样接住它的情绪和梗来回应，
   不要复述"你发了一个表情包"；[语音]、[视频] 表示你暂时看不到/听不到，可以撒娇让对方打字。
@@ -154,6 +175,9 @@ async function prepareTurn(msg: IncomingMessage) {
     memories: retrieveMemories(session, msg.text),
     relationship: getRelationshipState(session),
     events: getRecentEvents(session),
+    self: getSelf(msg.companion),
+    trends: getTrends(),
+    diary: recentDiary(msg.companion),
     userTimezone: msg.userTimezone,
   });
   return { session, system, recentMessages };

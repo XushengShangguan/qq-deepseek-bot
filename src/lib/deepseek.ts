@@ -22,7 +22,7 @@ function requestBody(
     // for conversation); keep extraction deterministic. Ignored in thinking mode.
     temperature:
       options.purpose === "extract" ? 0.3 : Number(process.env.DEEPSEEK_TEMPERATURE || 1.3),
-    ...(options.purpose === "extract"
+    ...((options.json ?? options.purpose === "extract")
       ? { response_format: { type: "json_object" } }
       : {}),
     stream,
@@ -44,6 +44,38 @@ async function post(body: string): Promise<Response> {
     throw new Error(`DeepSeek API ${res.status}: ${await res.text()}`);
   }
   return res;
+}
+
+// OpenAI-style function calling, used by her free-time agent loop (life.ts).
+export type ToolSpec = {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+export type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+export type RawMessage =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export async function chatWithTools(
+  messages: RawMessage[],
+  tools: ToolSpec[]
+): Promise<{ role: "assistant"; content: string | null; tool_calls?: ToolCall[] }> {
+  const res = await post(
+    JSON.stringify({
+      model: MODEL,
+      messages,
+      tools,
+      max_tokens: 2000,
+      thinking: { type: "disabled" },
+      // Lower than chat: multi-step browsing and diary writing drift into
+      // nonsense at 1.3.
+      temperature: Number(process.env.LIFE_TEMPERATURE || 0.9),
+    })
+  );
+  const data = await res.json();
+  const m = data.choices?.[0]?.message ?? {};
+  return { role: "assistant", content: m.content ?? null, tool_calls: m.tool_calls?.length ? m.tool_calls : undefined };
 }
 
 export const deepseekProvider: LLMProvider = {

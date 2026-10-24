@@ -56,6 +56,11 @@ function partsIn(ts: number, tz: string) {
   return { y, m, d, hh: p.hour, mm: p.minute, weekday: WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] };
 }
 
+/** Hour of the day (0-23) in `tz`. */
+export function hourIn(tz: string, ts = Date.now()) {
+  return Number(partsIn(ts, tz).hh);
+}
+
 /** Same calendar day in `tz`? */
 export function sameDay(a: number, b: number, tz: string) {
   const x = partsIn(a, tz), y = partsIn(b, tz);

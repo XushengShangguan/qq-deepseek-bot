@@ -30,6 +30,19 @@ const USER_TIMEZONES = new Map(
 const ALLOWED_USERS = new Set(
   (process.env.QQ_ALLOWED_USERS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
+export const QQ_COMPANION = COMPANION;
+
+export type QQPerson = { qq: string; name: string; timezone?: string };
+
+/** The people she knows on QQ (QQ_ALLOWED_USERS), with what she calls them. */
+export function qqPeople(): QQPerson[] {
+  return Array.from(ALLOWED_USERS).map((qq) => ({
+    qq,
+    name: USER_NAMES.get(qq) || qq,
+    timezone: USER_TIMEZONES.get(qq),
+  }));
+}
+
 // People often send several short messages in a row; wait this long for more
 // before replying, and answer them together.
 const DEBOUNCE_MS = Number(process.env.QQ_DEBOUNCE_MS || 1200);

@@ -5,6 +5,7 @@ import {
   recordRelationshipEvent,
   type RelationshipEvent,
 } from "./relationship";
+import { addSelfNote, getSelf, maybeGrow } from "./self";
 
 // After each meaningful turn, ask the model what (if anything) is worth
 // remembering (plan §6.5). Runs in the background; never blocks the reply.
@@ -25,14 +26,20 @@ importance：0~1，日常小喜好约 0.3，重要的人/事/计划约 0.7，非
 relationship_event：只有当这一轮对你们的关系有实际影响时才填写（例如用户倾诉心事、表达感谢、吵架、和好、做出约定），否则为 null。
 effect 是对亲密度 closeness / 信任 trust / 俏皮 playfulness 的变化，每项 -5 到 5 的整数，大多数时候是 0~2 的小变化。
 
+self_notes：关于角色自己的成长片段。角色会慢慢形成自己的性格和喜好，只记这一轮里角色自己表现出来的、新的东西：
+新的喜好或讨厌、对某件事的看法、新学会并用上的说法、自己经历的事、情绪的变化。
+用第三人称写，例如"她开始觉得某个梗很好笑""她不喜欢被人催"。和"她已经是这样的"里重复的不要记；大多数轮次是空数组。
+
 输出格式：
 {"memories": [{"content": "...", "category": "...", "tags": ["关键词"], "importance": 0.5}],
- "relationship_event": null 或 {"event": "...", "emotion": "...", "importance": 0.5, "effect": {"closeness": 0, "trust": 0, "playfulness": 0}}}
-没有需要记的就输出 {"memories": [], "relationship_event": null}`;
+ "relationship_event": null 或 {"event": "...", "emotion": "...", "importance": 0.5, "effect": {"closeness": 0, "trust": 0, "playfulness": 0}},
+ "self_notes": ["..."]}
+没有需要记的就输出 {"memories": [], "relationship_event": null, "self_notes": []}`;
 
 type Extraction = {
   memories?: NewMemory[];
   relationship_event?: RelationshipEvent | null;
+  self_notes?: string[];
 };
 
 function parseJson(text: string): Extraction | null {
@@ -67,11 +74,16 @@ export async function extractAndUpdateMemory(args: {
 
   // Dates the user mentions ("下周三") are relative to the user's own clock.
   const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
+  const self = getSelf(args.session.companion);
+  const selfKnown = [self.portrait, ...self.notes.map((n) => `- ${n}`)].filter(Boolean).join("\n");
   const prompt = `用户在${cityName(userTz)}，用户那边现在是 ${formatNow(userTz)}。
 用户的称呼：${args.userName}
 
 已经记住的内容：
 ${known || "（暂无）"}
+
+她已经是这样的：
+${selfKnown || "（还没有记录）"}
 
 刚刚的对话：
 用户：${args.userText}
@@ -94,7 +106,11 @@ ${known || "（暂无）"}
   if (result.relationship_event?.event) {
     recordRelationshipEvent(args.session, result.relationship_event);
   }
-  if (result.memories?.length || result.relationship_event) {
+  for (const note of result.self_notes ?? []) {
+    if (typeof note === "string") addSelfNote(args.session.companion, note);
+  }
+  maybeGrow(args.session.companion);
+  if (result.memories?.length || result.relationship_event || result.self_notes?.length) {
     console.log("INFO: memory updated", JSON.stringify(result));
   }
 }
