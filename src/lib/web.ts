@@ -150,3 +150,54 @@ export async function baiduRealtime(): Promise<string[]> {
   const d = await getJson("https://top.baidu.com/api/board?tab=realtime");
   return (d.data?.cards?.[0]?.content ?? []).map((x: any) => x.word).filter(Boolean).slice(0, 20);
 }
+
+// ---------- Baidu Tieba (mobile web JSON; no login needed) ----------
+
+function tiebaText(content: any[] = []): string {
+  return content
+    .map((c) => (typeof c?.text === "string" ? c.text : ""))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Tieba's hot-discussion board: topic titles. */
+export async function tiebaHot(): Promise<string[]> {
+  const res = await fetch("https://tieba.baidu.com/hottopic/browse/topicList?res_type=1", {
+    headers: { "User-Agent": UA },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`贴吧热议打不开（HTTP ${res.status}）`);
+  const html = await res.text();
+  return Array.from(html.matchAll(/class="topic-text">([^<]+)</g), (m) => htmlToText(m[1])).slice(0, 20);
+}
+
+/** Recent threads in one tieba (贴吧), e.g. "deepseek". */
+export async function tiebaForum(name: string): Promise<string> {
+  const d = await getJson(
+    `https://tieba.baidu.com/mg/f/getFrsData?kw=${encodeURIComponent(name)}&rn=15&pn=1&sort_type=0`
+  );
+  const threads: any[] = d.data?.thread_list ?? [];
+  if (!d.data?.forum?.is_exists && !threads.length) return `没有"${name}"这个吧`;
+  return threads
+    .map((t) => {
+      const abstract = tiebaText(t.abstract ?? t.rich_abstract).slice(0, 80);
+      return `- ${t.title}（${t.reply_num ?? 0} 回复，帖子号 ${t.id ?? t.tid}）${abstract ? `：${abstract}` : ""}`;
+    })
+    .join("\n");
+}
+
+/** First floors of a tieba thread, by thread id (帖子号) or link. */
+export async function tiebaThread(ref: string): Promise<string> {
+  const id = ref.match(/(\d{6,})/)?.[1];
+  if (!id) throw new Error("需要帖子号或帖子链接");
+  const d = await getJson(`https://tieba.baidu.com/mg/p/getPbData?kz=${id}&pn=1&rn=20&obj_param2=chrome`);
+  const posts: any[] = d.data?.post_list ?? [];
+  if (!posts.length) throw new Error("帖子打不开或已被删");
+  const title = d.data?.thread?.title ?? posts[0]?.title ?? "";
+  const floors = posts
+    .map((p) => ({ floor: Number(p.floor), text: tiebaText(p.content) }))
+    .filter((p) => p.text)
+    .map((p) => `${p.floor === 1 ? "楼主" : `${p.floor}楼`}：${p.text.slice(0, 150)}`);
+  return [title ? `标题：${title}` : "", ...floors].filter(Boolean).join("\n");
+}

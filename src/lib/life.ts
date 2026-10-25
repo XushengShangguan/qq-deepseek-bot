@@ -3,11 +3,11 @@ import { chatWithTools, type RawMessage, type ToolSpec } from "./deepseek";
 import { getDb } from "./db";
 import { addJournal, recentJournal } from "./journal";
 import { getRecentMessages, saveMessage } from "./memory";
-import { qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
+import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { addSelfNote, getSelf, maybeGrow } from "./self";
 import { COMPANION_TIMEZONE, DEFAULT_USER_TIMEZONE, cityName, formatDate, formatGap, formatNow, hourIn } from "./time";
 import { getTrends } from "./trends";
-import { biliHotSearch, biliPopular, biliVideo, lookupBaike, readPage } from "./web";
+import { biliHotSearch, biliPopular, biliVideo, lookupBaike, readPage, tiebaForum, tiebaHot, tiebaThread } from "./web";
 
 // Her own time. Every so often (when nobody is talking to her) she wakes up
 // and does whatever she feels like with a small set of read-only web tools:
@@ -18,18 +18,20 @@ import { biliHotSearch, biliPopular, biliVideo, lookupBaike, readPage } from "./
 
 const ENABLED = (process.env.LIFE || "on") !== "off";
 // Average minutes between free-time sessions (randomized ±50%).
-const INTERVAL_MIN = Number(process.env.LIFE_INTERVAL_MINUTES || 60);
+const INTERVAL_MIN = Number(process.env.LIFE_INTERVAL_MINUTES || 90);
 // Hours (her timezone) when she's asleep, e.g. "1-8" = 01:00 to 07:59.
 const [SLEEP_FROM, SLEEP_TO] = (process.env.LIFE_SLEEP_HOURS || "1-8").split("-").map(Number);
 const MAX_STEPS = Number(process.env.LIFE_MAX_STEPS || 12);
 // Unprompted messages per friend per day, and their quiet hours (their timezone).
-const MAX_MESSAGES_PER_DAY = Number(process.env.LIFE_MAX_MESSAGES_PER_DAY || 2);
-// Friends who like hearing from her often (QQ numbers): no daily cap, just at
-// least CHATTY_GAP between her unprompted messages.
+const MAX_MESSAGES_PER_DAY = Number(process.env.LIFE_MAX_MESSAGES_PER_DAY || 1);
+// Friends who like hearing from her more often (QQ numbers): up to
+// CHATTY_MAX_PER_DAY, at least CHATTY_GAP apart. A bot QQ account that sends
+// a lot gets kicked offline by Tencent's risk control, so keep these modest.
 const CHATTY_FRIENDS = new Set(
   (process.env.LIFE_CHATTY_FRIENDS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
-const CHATTY_GAP_MS = Number(process.env.LIFE_CHATTY_GAP_MINUTES || 50) * 60 * 1000;
+const CHATTY_GAP_MS = Number(process.env.LIFE_CHATTY_GAP_MINUTES || 180) * 60 * 1000;
+const CHATTY_MAX_PER_DAY = Number(process.env.LIFE_CHATTY_MAX_PER_DAY || 4);
 const QUIET_FROM = 23;
 const QUIET_TO = 9;
 // Don't barge in on a conversation that's happening right now.
@@ -83,6 +85,38 @@ const TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "tieba_hot",
+      description: "看百度贴吧的热议榜，现在吧友们在吵什么。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "tieba_forum",
+      description: "逛一个贴吧，看最近的帖子标题和帖子号，比如 deepseek吧、弱智吧、抗压背锅吧。",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "吧名，不带\"吧\"字，比如 deepseek" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "tieba_thread",
+      description: "点进一个贴吧帖子，看楼主和前面几楼的回复。",
+      parameters: {
+        type: "object",
+        properties: { thread: { type: "string", description: "帖子号或帖子链接" } },
+        required: ["thread"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "note_about_self",
       description: "记下你发现的关于自己的新东西：新喜欢上的、讨厌的、新的想法、新学会的说法。会慢慢变成你的一部分。",
       parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] },
@@ -124,6 +158,7 @@ function messageBlocked(companion: string, p: QQPerson): string | null {
   if (CHATTY_FRIENDS.has(p.qq)) {
     const lastSent = sent[sent.length - 1]?.created_at;
     if (lastSent && Date.now() - lastSent < CHATTY_GAP_MS) return `刚找过${p.name}没多久，过一会儿再找吧`;
+    if (sent.length >= CHATTY_MAX_PER_DAY) return `今天已经主动找过${p.name} ${sent.length} 次了，留点话下次聊`;
   } else if (sent.length >= MAX_MESSAGES_PER_DAY) {
     return `今天已经主动找过${p.name} ${sent.length} 次了，再找就烦人了`;
   }
@@ -144,6 +179,12 @@ async function runTool(companion: string, name: string, args: any): Promise<stri
     }
     case "bilibili_video":
       return biliVideo(String(args.video ?? ""));
+    case "tieba_hot":
+      return (await tiebaHot()).map((t) => `- ${t}`).join("\n") || "热议榜是空的";
+    case "tieba_forum":
+      return tiebaForum(String(args.name ?? ""));
+    case "tieba_thread":
+      return tiebaThread(String(args.thread ?? ""));
     case "note_about_self":
       addSelfNote(companion, String(args.note ?? ""));
       return "记下了";
@@ -154,6 +195,8 @@ async function runTool(companion: string, name: string, args: any): Promise<stri
       if (!text) return "消息是空的";
       const blocked = messageBlocked(companion, p);
       if (blocked) return `没发出去：${blocked}`;
+      // Bot account kicked offline: don't let her think it went through.
+      if (!(await isOnline())) return "没发出去：QQ 现在连不上，消息发不出去";
       // Record first so a reply that arrives mid-send already sees it in history.
       saveMessage({ userId: `qq:${p.qq}`, companion }, "assistant", text);
       addJournal(companion, "message", text, p.qq);
@@ -183,7 +226,7 @@ async function systemPrompt(companion: string): Promise<string> {
       return (
         `- ${p.name}（在${cityName(tz)}，那边现在 ${formatNow(tz)}；` +
         `${last ? `上次聊天是 ${formatGap(Date.now() - last)}前` : "还没聊过"}）` +
-        (CHATTY_FRIENDS.has(p.qq) ? `\n  ${p.name}喜欢你常常主动找他，每次自由时间都可以找他说说话。` : "") +
+        (CHATTY_FRIENDS.has(p.qq) ? `\n  ${p.name}喜欢你主动找他，隔几个小时找他说说话挺好。` : "") +
         (recent ? `\n  最近聊的：\n${recent}` : "")
       );
     })
@@ -201,12 +244,12 @@ async function systemPrompt(companion: string): Promise<string> {
     people ? `## 你的朋友们\n${people}` : "",
     `## 现在
 你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。现在是你自己的自由时间，没有人在跟你聊天。
-想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；
+想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、逛贴吧看吧友吵架、查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；
 也可以接着之前日记里没弄完的事。不想动就少干点，发会儿呆也行。不用为了谁去做，也不用每次都做一样的事。
 
 - 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。
-- 想找朋友聊天、或者有想分享的东西，就用 message_friend。喜欢你常找他的人，每次都可以去找；其他人别为了发而发。
-  发的话像平时聊天那样说，短，每行一条，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
+- 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
+  发的话像平时聊天那样说：一两行就够，挑最想说的那一件事说，别一口气倒一堆，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
 - 最后一定用 write_diary 写几句日记，记下这次干了什么、什么感觉，然后就结束。`,
   ]
     .filter(Boolean)

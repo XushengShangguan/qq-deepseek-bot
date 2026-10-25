@@ -8,10 +8,9 @@ import path from "path";
 type Shape = { weight: number; text: string };
 
 const SHAPES: Shape[] = [
-  { weight: 30, text: "这次只回 1 条，很短，几个字就行（比如一个反应、一句吐槽、一个\"嗯\"）" },
+  { weight: 50, text: "这次只回 1 条，很短，几个字就行（比如一个反应、一句吐槽、一个\"嗯\"）" },
   { weight: 35, text: "这次回 2 条" },
-  { weight: 25, text: "这次回 3 条" },
-  { weight: 10, text: "这次可以多说几句，回 4 条左右" },
+  { weight: 15, text: "这次回 3 条" },
 ];
 
 function pickShape(): string {

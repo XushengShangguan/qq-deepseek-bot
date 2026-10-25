@@ -230,7 +230,7 @@ export function sendPrivateMessage(qq: string, text: string) {
 }
 
 /** Is the bot account still logged in? */
-async function isOnline(): Promise<boolean> {
+export async function isOnline(): Promise<boolean> {
   try {
     const data = await callNapCat("get_status", {}, 5000);
     return data.data?.online === true;
@@ -243,7 +243,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Lines longer than this get broken at sentence ends / commas as a fallback,
 // in case the model writes one long sentence instead of several short messages.
-const MAX_PIECE = 20;
+const MAX_PIECE = 30;
+// At most this many QQ messages per reply; extra lines are joined onto the
+// last one. Bursts of messages are what gets a bot account risk-controlled.
+const MAX_PIECES = Number(process.env.QQ_MAX_PIECES || 3);
 
 function breakLongLine(line: string): string[] {
   const out: string[] = [];
@@ -268,12 +271,15 @@ function breakLongLine(line: string): string[] {
 
 /** Split a reply into QQ-sized messages, the way people actually type. */
 export function splitIntoMessages(reply: string): string[] {
-  return reply
-    .split(/\n+/)
-    .flatMap(breakLongLine)
-    // Nobody ends a chat message with "。" or "，".
-    .map((p) => p.replace(/[。，,]+$/u, "").trim())
-    .filter(Boolean);
+  const lines = reply.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  // Only break up long lines when that doesn't push the count past the cap.
+  const pieces = lines.length < MAX_PIECES ? lines.flatMap(breakLongLine) : lines;
+  const capped =
+    pieces.length > MAX_PIECES
+      ? [...pieces.slice(0, MAX_PIECES - 1), pieces.slice(MAX_PIECES - 1).join(" ")]
+      : pieces;
+  // Nobody ends a chat message with "。" or "，".
+  return capped.map((p) => p.replace(/[。，,]+$/u, "").trim()).filter(Boolean);
 }
 
 // Pace replies like a person on a phone: read the message, then type each

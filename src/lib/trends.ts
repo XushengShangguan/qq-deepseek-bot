@@ -1,11 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { getLLM } from "./llm";
-import { baiduRealtime, biliComments, biliHotSearch, biliPopular } from "./web";
+import { baiduRealtime, biliComments, biliHotSearch, biliPopular, tiebaHot } from "./web";
 
 // What she has "seen on her phone lately": a few times a day, pull public hot
 // lists (Bilibili hot searches, popular videos and their top comments, Baidu
-// realtime) and have the model boil them down to current topics and the way
+// realtime, Tieba hot topics) and have the model boil them down to current topics and the way
 // people are talking. The digest goes into the chat prompt so she can keep up
 // with new memes. Refreshes in the background; a turn never waits for it.
 
@@ -28,7 +28,7 @@ async function popularWithComments(): Promise<{ titles: string[]; comments: stri
 }
 
 const DIGEST_SYSTEM = `你在帮一个聊天角色"刷手机"。她是个很爱上网的年轻人，平时刷 B 站、微博、小红书。
-下面是今天网上的热搜、热门视频标题和热门评论。请整理成她脑子里"最近网上在发生什么"的印象，只输出两部分纯文本，不要 Markdown 加粗：
+下面是今天网上的热搜、热门视频标题、热门评论和贴吧热议。请整理成她脑子里"最近网上在发生什么"的印象，只输出两部分纯文本，不要 Markdown 加粗：
 
 最近大家在聊的：
 - 挑 6~10 个年轻人真的会拿来聊的话题（游戏、动漫、综艺、明星、生活、社会热点、离谱新闻都行），每条一行，用一句大白话说清楚是什么事
@@ -41,7 +41,7 @@ const DIGEST_SYSTEM = `你在帮一个聊天角色"刷手机"。她是个很爱�
 素材太少就少写，不要凑数。`;
 
 async function buildDigest(): Promise<string> {
-  const [hot, popular, baidu] = await Promise.allSettled([biliHotSearch(), popularWithComments(), baiduRealtime()]);
+  const [hot, popular, baidu, tieba] = await Promise.allSettled([biliHotSearch(), popularWithComments(), baiduRealtime(), tiebaHot()]);
   const parts: string[] = [];
   if (hot.status === "fulfilled" && hot.value.length) parts.push(`B站热搜：\n${hot.value.join("\n")}`);
   if (popular.status === "fulfilled") {
@@ -49,7 +49,8 @@ async function buildDigest(): Promise<string> {
     if (popular.value.comments.length) parts.push(`B站热门评论：\n${popular.value.comments.join("\n")}`);
   }
   if (baidu.status === "fulfilled" && baidu.value.length) parts.push(`百度热搜：\n${baidu.value.join("\n")}`);
-  for (const r of [hot, popular, baidu]) {
+  if (tieba.status === "fulfilled" && tieba.value.length) parts.push(`贴吧热议：\n${tieba.value.join("\n")}`);
+  for (const r of [hot, popular, baidu, tieba]) {
     if (r.status === "rejected") console.log("WARNING: trends source failed:", String(r.reason));
   }
   if (!parts.length) throw new Error("no trend sources reachable");
