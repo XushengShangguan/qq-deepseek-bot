@@ -19,6 +19,13 @@ services:
       - ../companions:/app/companions:ro
     ports:
       - "127.0.0.1:3000:3000"   # browser debug chat / memory view
+    # Next.js runs instrumentation.ts (free time, offline alerts) only on the
+    # first request after start; this ping makes that happen right away.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 60s
+      timeout: 10s
+      start_period: 20s
 
   napcat:
     image: mlikiowa/napcat-docker:latest
@@ -34,6 +41,11 @@ services:
       # ... and also when NapCat restarts QQ internally after a crash/logout,
       # which does not pass -q again.
       NAPCAT_QUICK_ACCOUNT: ${ACCOUNT}
+      # When Tencent invalidates the login (kicked offline), log back in with
+      # the password instead of waiting for a QR scan. MD5 of the bot QQ's
+      # password, set in .env; empty = QR only. Risk-control blocks (slider /
+      # SMS verification) still need a manual login.
+      NAPCAT_QUICK_PASSWORD_MD5: ${NAPCAT_QUICK_PASSWORD_MD5:-}
     ports:
       - "127.0.0.1:6099:6099"   # WebUI (QR login)
     volumes:

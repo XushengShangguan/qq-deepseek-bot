@@ -19,6 +19,11 @@ services:
       ACCOUNT: ${ACCOUNT}
       # Also used when NapCat restarts QQ internally (which drops -q).
       NAPCAT_QUICK_ACCOUNT: ${ACCOUNT}
+      # When Tencent invalidates the login (kicked offline), log back in with
+      # the password instead of waiting for a QR scan. MD5 of the bot QQ's
+      # password, set in .env; empty = QR only. Risk-control blocks (slider /
+      # SMS verification) still need a manual login.
+      NAPCAT_QUICK_PASSWORD_MD5: ${NAPCAT_QUICK_PASSWORD_MD5:-}
     ports:
       - "127.0.0.1:6099:6099"   # WebUI (QR login, settings)
       - "127.0.0.1:3001:3001"   # OneBot HTTP API, used by the app to send messages
