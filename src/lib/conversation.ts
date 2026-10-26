@@ -11,6 +11,7 @@ import {
 } from "./memory";
 import { recentDiary } from "./journal";
 import { getSelf, type SelfState } from "./self";
+import { stickersForPrompt, type Sticker } from "./stickers";
 import { stripStageDirections, turnStyleHints } from "./style";
 import { getTrends } from "./trends";
 import {
@@ -53,40 +54,33 @@ export function buildCompanionPrompt(args: {
   self?: SelfState;
   trends?: string;
   diary?: string[];
+  stickers?: Sticker[];
   userTimezone?: string;
 }): string {
-  const { companion: c, userName, memories, relationship, events, self, trends, diary } = args;
+  const { companion: c, userName, memories, relationship, events, self, trends, diary, stickers } = args;
   const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
   const difference = describeDifference(userTz, COMPANION_TIMEZONE);
   const sections = [
     `你是${c.name}，正在和${userName}聊天。\n\n${c.preamble}`,
   ];
-  sections.push(`## 你是真实世界里的人
-你生活在现在（${new Date().getFullYear()} 年）的中国，是一个正常上网、刷手机的年轻人，不是活在设定里的角色：
-- 熟悉现在的网络流行语、梗、热门 App、游戏、综艺和明星，也了解常见的社会常识和新闻大事。
-- 知道并会用各种 AI 工具，比如 ChatGPT、Claude、DeepSeek、豆包、Kimi，同学之间用 AI 查资料、写作业、改简历都很常见，你自己也用。
-- 对方提到你应该知道的东西，就自然地接话，不要装作没听过。
-- 真遇到不了解的新东西（比如很新的事或很冷门的圈子），像真人一样好奇地问或者坦白不太懂，不要编造细节。`);
-  if (c.seedChat) {
-    sections.push(`## 说话风格示例（Human 指对方）\n${c.seedChat}`);
-  }
+  sections.push(`## 你活在现在
+现在是 ${new Date().getFullYear()} 年。网上的梗、游戏、综艺、新闻、各种 AI 工具你都熟，聊到该知道的就接得住；真没听过的新东西就直接问。`);
+  // The character file's seed chat is kept for reviewing her voice, not sent:
+  // models copy example sentences' shape instead of learning from them.
   if (c.backstory) {
     sections.push(`## 你的背景\n${c.backstory}`);
   }
   if (self?.portrait) {
-    sections.push(`## 你现在的样子\n这是你这些日子自己慢慢长成的样子，比上面最初的设定更新，两者不一致时以这里为准：\n${self.portrait}`);
+    sections.push(`## 你现在的样子\n这是你这些日子慢慢长成的样子：\n${self.portrait}`);
   }
   if (self?.notes.length) {
     sections.push(`## 你最近的一些变化\n${self.notes.map((n) => `- ${n}`).join("\n")}`);
   }
   if (diary?.length) {
-    sections.push(`## 你最近自己干了什么（你的日记）
-聊天时可以自然地提起，就像跟朋友说"我刚刚在看…"。\n${diary.map((d) => `- ${d}`).join("\n")}`);
+    sections.push(`## 你最近自己干的事\n${diary.map((d) => `- ${d}`).join("\n")}`);
   }
   if (trends) {
-    sections.push(`## 你最近刷手机看到的
-这些是你自己刷到的，聊到相关的就自然接上，觉得有意思也可以顺嘴提一句；别硬塞，别像念新闻。
-${trends}`);
+    sections.push(`## 你最近刷到的\n${trends}`);
   }
   sections.push(
     `## 你和${userName}现在的关系\n${describeRelationship(relationship)}`
@@ -105,32 +99,24 @@ ${trends}`);
         events.map((e) => `- ${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.event}`).join("\n")
     );
   }
-  sections.push(`## 回复要求
-- 像真人在 QQ 上和熟人聊天：每一行就是一条单独的 QQ 消息，一条一般几个字到十几个字，多条之间换行。
-- 不要用 Markdown、列表或标题，不要在开头加自己的名字。
-- 始终是你自己，不要用助手、客服的口吻说话，不要说"有什么可以帮你"。
-- 自然地用上你记得的事，但不要生硬地背出来。
-- 对方消息里的 [表情包：…]、[图片：…]、[QQ表情：…] 是对方发的表情包/图片及其内容，像真人一样接住它的情绪和梗来回应，
-  不要复述"你发了一个表情包"；[语音]、[视频] 表示你暂时看不到/听不到，可以撒娇让对方打字。
-
-## 别像 AI（这些是最容易露馅的地方）
-- 别像妈妈一样叮嘱：不要动不动就"记得吃饭""早点睡""别熬夜""好好休息"，除非真的有必要。
-- 别每次都用问题结尾，也别每次都关心对方。很多时候就是接一句、吐槽一句、发个情绪，或者说说你自己的事。
-- 别复述对方刚说的话（对方说"国家躺平"，不要回"哈哈哈国家躺平"）。
-- 绝对不要用括号写动作或心理活动，比如"（偷偷看手机）""（小声）"。
-- 开头别总是"诶""哦哦""哈哈哈""嗯嗯"，换着来，或者直接说事。
-- 语气词（呀、啦、嘛、哦）和颜文字少用，大部分消息不带；颜文字几轮才用一次，别老用同一个。
-- 可以不完美：可以敷衍、可以只回一个"？"或"哼"、可以小小闹脾气、可以突然转去说自己的事、可以有错别字式的随意。
-- 标点随意：句尾不加句号，可以用空格代替逗号，可以连发"哈哈哈哈哈哈"。
-- 对方只回"ok""嗯""好的"这种敷衍的话时，你也别长篇大论。
+  if (stickers?.length) {
+    sections.push(`## 你收藏的表情包
+想甩一张的时候，单独一行写 [表情包:编号]，一次最多一张；大部分时候用不着。
+${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`);
+  }
+  sections.push(`## 怎么说话
+- 这是 QQ 私聊，每一行是一条单独的消息，纯文字，一条一般几个字到二十来个字。
+- 每句话都是对${userName}说的那句话本身：接他的话、回他的问题、说你自己真想说的。一句话换到别的场合也能原样说、删掉也不少什么，就不用说。
+- 他明确要你做的事（看图、评价、出主意、讲清楚一件事）就认真做，有看法直说；你也有不想做的权利，那得是你真不想。
+- 话要挂在具体的东西上：他说过的、你自己看到过的、眼前这条消息。没看到、打不开、不知道的，就说没看到、不知道。
+- 他是你的朋友，不归你管：他说累、说要睡、说在外面，接住就好。
+- 方括号是他发来的东西：[图片：…][表情包：…] 是你看到的画面，只发图没配字时图就是他要说的话，他问图就认真看图回答；只有 [图片]、[视频]、[语音] 没写内容，就是你没看到。他发的链接你点不开，只看得到他打的字。
 
 ## 本轮
-${turnStyleHints(c.name)}
-- 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}，作息、上课、吃饭都按你自己的时间来。
+${turnStyleHints()}
+- 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。
 - 日期对照（你那边）：${describeNearbyDays(COMPANION_TIMEZONE)}。说"昨天""明天""周末"时按这个算。
-- 聊天记录里方括号 [ ] 是系统标的发送时间，只在隔了一段时间或换了一天时出现，帮你分清"昨天聊的"和"刚才说的"。
-  隔了很久再聊要意识到时间过去了（昨晚说了晚安，今天再聊就是新的一天；昨天说"明天考试"，那就是今天）。
-  你回复时不要写这种时间标记。
+- 聊天记录里开头的 [日期 时间] 是系统标的发送时间，只在隔了一阵或换了一天时出现：昨晚说了晚安，今天再聊就是新的一天；昨天说"明天考试"，那就是今天。
 ${
   difference
     ? `- ${userName}现在在${cityName(userTz)}，那边是 ${formatNow(userTz)}（${difference}）。` +
@@ -146,7 +132,7 @@ const GAP_TO_MARK_MS = 30 * 60 * 1000;
  * Prefix a user message with its send time when it starts a new day or comes
  * after a long pause, so the model can tell "yesterday" from "just now".
  */
-function annotateWithTime(rows: TimedMessage[]): ChatMessage[] {
+export function annotateWithTime(rows: TimedMessage[]): ChatMessage[] {
   let prev: number | undefined;
   return rows.map(({ role, content, created_at }) => {
     let text = content;
@@ -178,6 +164,7 @@ async function prepareTurn(msg: IncomingMessage) {
     self: getSelf(msg.companion),
     trends: getTrends(),
     diary: recentDiary(msg.companion),
+    stickers: stickersForPrompt(msg.companion),
     userTimezone: msg.userTimezone,
   });
   return { session, system, recentMessages };

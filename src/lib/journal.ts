@@ -25,9 +25,17 @@ export function recentJournal(companion: string, kind: string, sinceMs: number, 
     .reverse() as JournalEntry[];
 }
 
+// Diary entries run to hundreds of characters; whole entries in every chat
+// prompt crowded out the conversation and set her mood for it.
+const DIARY_ENTRIES = 2;
+const DIARY_CHARS = 150;
+
 /** Diary lines for the chat prompt: what she's been up to lately. */
 export function recentDiary(companion: string): string[] {
-  return recentJournal(companion, "diary", 2 * DAY_MS, 4).map(
-    (e) => `${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.content}`
-  );
+  return recentJournal(companion, "diary", 2 * DAY_MS, DIARY_ENTRIES).map((e) => {
+    // She often starts an entry with its own date; we add ours.
+    const text = e.content.replace(/^\s*\d{4}[/-]\d{1,2}[/-]\d{1,2}[：:]\s*/, "").replace(/\s+/g, " ");
+    const short = text.length > DIARY_CHARS ? text.slice(0, DIARY_CHARS) + "…" : text;
+    return `${formatDate(e.created_at, COMPANION_TIMEZONE)}：${short}`;
+  });
 }

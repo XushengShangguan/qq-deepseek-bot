@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { handleMessage } from "./conversation";
 import { describeImage, qqFaceName } from "./media";
+import { collectReceivedSticker, getSticker, markUsed, STICKER_LINE, stickerBase64 } from "./stickers";
 
 // QQ channel via NapCat (OneBot 11). Only converts QQ <-> internal format and
 // sends replies; persona and memory logic stay in conversation.ts (plan §5).
@@ -90,15 +91,18 @@ function isSticker(data: Record<string, any> = {}) {
   return Number(data.sub_type) === 1 || /表情/.test(String(data.summary ?? ""));
 }
 
-async function segmentToText(seg: Segment): Promise<string> {
+async function segmentToText(seg: Segment, qq: string): Promise<string> {
   const data = seg.data ?? {};
   switch (seg.type) {
     case "text":
       return String(data.text ?? "");
     case "image":
+      // Stickers friends send go into her own collection too.
+      if (isSticker(data)) collectReceivedSticker(COMPANION, data.url, qq);
       return describeImage(data.url, isSticker(data) ? "sticker" : "photo");
     case "mface":
       // Store stickers: describe the picture; the summary (e.g. "[开心]") is the fallback.
+      collectReceivedSticker(COMPANION, data.url, qq);
       return data.url
         ? describeImage(data.url, "sticker")
         : `[表情包：${String(data.summary ?? "").replace(/[\[\]]/g, "")}]`;
@@ -133,7 +137,8 @@ export async function messageToText(event: OneBotEvent): Promise<string> {
   const segs = Array.isArray(msg)
     ? msg
     : parseCQ(typeof msg === "string" ? msg : event.raw_message ?? "");
-  const parts = await Promise.all(segs.map(segmentToText));
+  const qq = String(event.user_id ?? "");
+  const parts = await Promise.all(segs.map((seg) => segmentToText(seg, qq)));
   return parts.join("").trim();
 }
 
@@ -229,6 +234,22 @@ export function sendPrivateMessage(qq: string, text: string) {
   return callNapCat("send_private_msg", { user_id: Number(qq), message: text });
 }
 
+/** Send one of her stickers; false if it no longer exists. */
+async function sendSticker(qq: string, id: number): Promise<boolean> {
+  const sticker = getSticker(COMPANION, id);
+  const b64 = sticker && stickerBase64(sticker);
+  if (!sticker || !b64) {
+    console.log(`WARNING: sticker ${id} not found, skipped`);
+    return false;
+  }
+  await callNapCat("send_private_msg", {
+    user_id: Number(qq),
+    message: [{ type: "image", data: { file: `base64://${b64}`, sub_type: 1, summary: "[动画表情]" } }],
+  });
+  markUsed(id);
+  return true;
+}
+
 /** Is the bot account still logged in? */
 export async function isOnline(): Promise<boolean> {
   try {
@@ -269,17 +290,25 @@ function breakLongLine(line: string): string[] {
   return out;
 }
 
-/** Split a reply into QQ-sized messages, the way people actually type. */
+/**
+ * Split a reply into QQ-sized messages, the way people actually type.
+ * A "[表情包:12]" line stays its own message (at most one per reply) and
+ * counts toward the cap.
+ */
 export function splitIntoMessages(reply: string): string[] {
   const lines = reply.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const stickerAt = lines.findIndex((l) => STICKER_LINE.test(l));
+  const sticker = stickerAt >= 0 ? lines[stickerAt] : undefined;
+  const text = lines.filter((l) => !STICKER_LINE.test(l));
+  const cap = MAX_PIECES - (sticker ? 1 : 0);
   // Only break up long lines when that doesn't push the count past the cap.
-  const pieces = lines.length < MAX_PIECES ? lines.flatMap(breakLongLine) : lines;
+  const pieces = text.length < cap ? text.flatMap(breakLongLine) : text;
   const capped =
-    pieces.length > MAX_PIECES
-      ? [...pieces.slice(0, MAX_PIECES - 1), pieces.slice(MAX_PIECES - 1).join(" ")]
-      : pieces;
+    pieces.length > cap ? [...pieces.slice(0, cap - 1), pieces.slice(cap - 1).join(" ")] : pieces;
   // Nobody ends a chat message with "。" or "，".
-  return capped.map((p) => p.replace(/[。，,]+$/u, "").trim()).filter(Boolean);
+  const out = capped.map((p) => p.replace(/[。，,]+$/u, "").trim()).filter(Boolean);
+  if (sticker) stickerAt === 0 ? out.unshift(sticker) : out.push(sticker);
+  return out;
 }
 
 // Pace replies like a person on a phone: read the message, then type each
@@ -295,6 +324,8 @@ function readingDelay(incoming: string) {
 
 /** Time to type one message. */
 function typingDelay(text: string) {
+  // Picking a sticker from the collection: about a second.
+  if (STICKER_LINE.test(text)) return 1200 * jitter();
   // Emoticons/emoji are picked from the keyboard, not typed: count each run of
   // symbols as one keystroke.
   const keystrokes = text.replace(/[^\p{Script=Han}\p{L}\p{N}]+/gu, "·").length;
@@ -320,7 +351,9 @@ export async function sendInPieces(
       await sleep(typingDelay(pieces[i]));
     }
     try {
-      await sendPrivateMessage(qq, pieces[i]);
+      const sticker = pieces[i].match(STICKER_LINE);
+      if (sticker) await sendSticker(qq, Number(sticker[1]));
+      else await sendPrivateMessage(qq, pieces[i]);
     } catch (err) {
       // No blind retry: a timed-out send often still goes through, and a
       // duplicated message looks more robotic than a missing one.

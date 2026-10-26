@@ -5,9 +5,20 @@ import { addJournal, recentJournal } from "./journal";
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { addSelfNote, getSelf, maybeGrow } from "./self";
+import { countStickers, lookAtImage, saveSticker } from "./stickers";
 import { COMPANION_TIMEZONE, DEFAULT_USER_TIMEZONE, cityName, formatDate, formatGap, formatNow, hourIn } from "./time";
 import { getTrends } from "./trends";
-import { biliHotSearch, biliPopular, biliVideo, lookupBaike, readPage, tiebaForum, tiebaHot, tiebaThread } from "./web";
+import {
+  biliHotSearch,
+  biliPopular,
+  biliVideo,
+  IMAGE_TOKEN,
+  lookupBaike,
+  readPage,
+  tiebaForum,
+  tiebaHot,
+  tiebaThread,
+} from "./web";
 
 // Her own time. Every so often (when nobody is talking to her) she wakes up
 // and does whatever she feels like with a small set of read-only web tools:
@@ -21,7 +32,7 @@ const ENABLED = (process.env.LIFE || "on") !== "off";
 const INTERVAL_MIN = Number(process.env.LIFE_INTERVAL_MINUTES || 90);
 // Hours (her timezone) when she's asleep, e.g. "1-8" = 01:00 to 07:59.
 const [SLEEP_FROM, SLEEP_TO] = (process.env.LIFE_SLEEP_HOURS || "1-8").split("-").map(Number);
-const MAX_STEPS = Number(process.env.LIFE_MAX_STEPS || 12);
+const MAX_STEPS = Number(process.env.LIFE_MAX_STEPS || 16);
 // Unprompted messages per friend per day, and their quiet hours (their timezone).
 const MAX_MESSAGES_PER_DAY = Number(process.env.LIFE_MAX_MESSAGES_PER_DAY || 1);
 // Friends who like hearing from her more often (QQ numbers): up to
@@ -117,6 +128,33 @@ const TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "look_at_image",
+      description: "看一张你刷到的图（评论区、帖子里标着 [图1] [图2] 的那些），看看画的是什么、能不能当表情包。",
+      parameters: {
+        type: "object",
+        properties: { image: { type: "string", description: "图的标号，比如 图3" } },
+        required: ["image"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_sticker",
+      description: "把一张你觉得好用的图收藏进自己的表情包，以后聊天时可以甩出来。",
+      parameters: {
+        type: "object",
+        properties: {
+          image: { type: "string", description: "图的标号，比如 图3" },
+          use_when: { type: "string", description: "你打算什么时候用它，一句话" },
+        },
+        required: ["image", "use_when"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "note_about_self",
       description: "记下你发现的关于自己的新东西：新喜欢上的、讨厌的、新的想法、新学会的说法。会慢慢变成你的一部分。",
       parameters: { type: "object", properties: { note: { type: "string" } }, required: ["note"] },
@@ -167,8 +205,42 @@ function messageBlocked(companion: string, p: QQPerson): string | null {
   return null;
 }
 
-async function runTool(companion: string, name: string, args: any): Promise<string> {
+/** Images seen during one free-time session, by the label she sees ("图3"). */
+type Session = { images: Map<string, string> };
+
+/** Replace "[图片 <url>]" in a tool result with "[图N]" labels she can refer to. */
+function labelImages(text: string, session: Session): string {
+  return text.replace(IMAGE_TOKEN, (_, url: string) => {
+    const label = `图${session.images.size + 1}`;
+    session.images.set(label, url);
+    return `[${label}]`;
+  });
+}
+
+function imageFor(session: Session, ref: unknown): string {
+  const label = String(ref ?? "").replace(/[\[\]\s]/g, "");
+  const url = session.images.get(label);
+  if (!url) throw new Error(`没有${label || "这张图"}，只能看这次刷到的、标着 [图N] 的图`);
+  return url;
+}
+
+function sourceOf(url: string): string {
+  return /hdslb\.com/.test(url) ? "bilibili" : /baidu\.com/.test(url) ? "tieba" : "web";
+}
+
+async function runTool(companion: string, name: string, args: any, session: Session): Promise<string> {
   switch (name) {
+    case "look_at_image": {
+      const look = await lookAtImage(imageFor(session, args.image));
+      return `画面：${look.shows}\n${look.sticker ? `能当表情包，适合：${look.useWhen}` : "不太像表情包"}${
+        look.sticker && !look.ok ? "（但这张不适合发）" : ""
+      }`;
+    }
+    case "save_sticker": {
+      const url = imageFor(session, args.image);
+      const r = await saveSticker(companion, url, sourceOf(url), String(args.use_when ?? "").trim());
+      return "saved" in r ? `收藏了，编号 ${r.saved.id}` : `没收藏：${r.skipped}`;
+    }
     case "read_page":
       return readPage(String(args.url ?? ""));
     case "lookup_baike":
@@ -178,13 +250,13 @@ async function runTool(companion: string, name: string, args: any): Promise<stri
       return `热搜：${hot.join(" / ")}\n热门视频：\n${popular.map((v) => `- ${v.title}（${v.bvid}）`).join("\n")}`;
     }
     case "bilibili_video":
-      return biliVideo(String(args.video ?? ""));
+      return labelImages(await biliVideo(String(args.video ?? "")), session);
     case "tieba_hot":
       return (await tiebaHot()).map((t) => `- ${t}`).join("\n") || "热议榜是空的";
     case "tieba_forum":
       return tiebaForum(String(args.name ?? ""));
     case "tieba_thread":
-      return tiebaThread(String(args.thread ?? ""));
+      return labelImages(await tiebaThread(String(args.thread ?? "")), session);
     case "note_about_self":
       addSelfNote(companion, String(args.note ?? ""));
       return "记下了";
@@ -248,9 +320,10 @@ async function systemPrompt(companion: string): Promise<string> {
 也可以接着之前日记里没弄完的事。不想动就少干点，发会儿呆也行。不用为了谁去做，也不用每次都做一样的事。
 
 - 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。
+- 评论区和帖子里的图标着 [图1] [图2]。想看就用 look_at_image，觉得以后聊天用得上就用 save_sticker 收藏。你现在收藏了 ${countStickers(companion)} 张表情包。
 - 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
   发的话像平时聊天那样说：一两行就够，挑最想说的那一件事说，别一口气倒一堆，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
-- 最后一定用 write_diary 写几句日记，记下这次干了什么、什么感觉，然后就结束。`,
+- 最后一定用 write_diary 写几句日记：像随手记的流水账，干了什么、看到什么、觉得怎样，平平常常地写，然后就结束。`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -258,6 +331,7 @@ async function systemPrompt(companion: string): Promise<string> {
 
 export async function liveOnce(companion = QQ_COMPANION): Promise<string[]> {
   const log: string[] = [];
+  const session: Session = { images: new Map() };
   const messages: RawMessage[] = [
     { role: "system", content: await systemPrompt(companion) },
     { role: "user", content: "（自由时间开始了）" },
@@ -283,7 +357,7 @@ export async function liveOnce(companion = QQ_COMPANION): Promise<string[]> {
         done = true;
       } else {
         try {
-          result = await runTool(companion, call.function.name, args);
+          result = await runTool(companion, call.function.name, args, session);
         } catch (err) {
           result = `出错了：${err instanceof Error ? err.message : String(err)}`;
         }

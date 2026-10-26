@@ -90,6 +90,22 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 CREATE INDEX IF NOT EXISTS idx_journal
   ON journal (companion, kind, created_at);
+
+-- Her sticker collection (stickers.ts): images saved under data/stickers/,
+-- found while browsing or received from friends.
+CREATE TABLE IF NOT EXISTS stickers (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion     TEXT    NOT NULL,
+  file          TEXT    NOT NULL,              -- name inside data/stickers/
+  hash          TEXT    NOT NULL,              -- sha1 of the image bytes
+  shows         TEXT    NOT NULL,              -- what's in the picture
+  use_when      TEXT    NOT NULL,              -- when she'd send it
+  source        TEXT    NOT NULL,              -- "bilibili" / "tieba" / "qq:<number>"
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  use_count     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (companion, hash)
+);
 `;
 
 // Next.js dev mode re-evaluates modules on every change; keep one connection.

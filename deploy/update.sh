@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Push code / persona changes from this Mac to the server and rebuild the app.
+# Push code / persona changes from this Mac to the server and rebuild the app
+# there. (Building on the Mac and uploading doesn't work: the image is ~200 MB
+# and this link into mainland China runs at ~17 KB/s.)
 # Leaves the server's data, settings and NapCat login untouched.
 #
 #   deploy/update.sh root@SERVER_IP [/opt/companion]
@@ -15,4 +17,4 @@ rsync -az \
   --exclude .env.local \
   ./ "$TARGET:$DIR/"
 
-ssh "$TARGET" "cd '$DIR/deploy' && docker compose up -d --build app && docker compose ps"
+ssh "$TARGET" "bash '$DIR/deploy/build-on-server.sh' '$DIR'"

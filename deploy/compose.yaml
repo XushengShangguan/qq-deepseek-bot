@@ -5,6 +5,9 @@
 # reach them through an SSH tunnel.
 services:
   app:
+    # Built on the server by build-on-server.sh, which keeps the build from
+    # starving QQ of memory.
+    image: companion-app:latest
     build: ..
     container_name: companion-app
     restart: unless-stopped

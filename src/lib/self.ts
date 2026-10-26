@@ -3,6 +3,9 @@ import { getDb } from "./db";
 import { getLLM } from "./llm";
 import { getTrends } from "./trends";
 
+// self_notes.consolidated: 0 = waiting, 1 = folded into a portrait,
+// -1 = excluded by hand (a note that taught her a bad habit).
+//
 // Free growth: who she is drifts away from the hand-written persona over time.
 // The memory extractor saves small notes about herself after each turn
 // ("开始喜欢某个梗", "觉得某件事很离谱"); every so often they are folded, together
@@ -39,6 +42,12 @@ function pendingNotes(companion: string): { id: number; content: string }[] {
     .all(companion) as { id: number; content: string }[];
 }
 
+function allNotes(companion: string): { id: number; content: string }[] {
+  return getDb()
+    .prepare(`SELECT id, content FROM self_notes WHERE companion = ? AND consolidated >= 0 ORDER BY id`)
+    .all(companion) as { id: number; content: string }[];
+}
+
 /** Current portrait plus the newest notes not yet folded into it. */
 export function getSelf(companion: string): SelfState {
   if (!ENABLED) return { portrait: "", notes: [] };
@@ -50,26 +59,30 @@ export function getSelf(companion: string): SelfState {
 
 const PORTRAIT_SYSTEM = `你在帮一个聊天角色整理"她现在是什么样的"。她会在聊天和刷手机中慢慢成长、形成自己的性格和喜好。
 你会看到：她最初的设定、她上一次的自我画像、之后新积累的关于她自己的片段、她最近在网上看到的东西。
-请写一份新的自我画像，用"你"来称呼她，纯文本，不要 Markdown，不超过 400 字，包括：
-- 现在的性格和说话习惯（包括新学会、真的常用的口头禅）
-- 喜欢的、讨厌的、最近在意或上头的东西
-- 对一些事情的看法
-- 最近的状态和心情
+请写一份新的自我画像，用"你"来称呼她，平实的纯文本，不超过 300 字，写这些：
+- 她喜欢的、讨厌的、最近在追或上头的具体东西（哪个游戏、哪类视频、哪个吧、哪个梗）
+- 她对一些具体的事的看法
+- 她最近的状态
 
-要求：
-- 成长是渐进的：保留上一份画像里仍然成立的部分，新片段说明她变了的地方才改，不要一下子变成另一个人。
-- 最初设定里的身份（她是谁、她是什么）不变。
-- 片段之间矛盾时，以更新的、出现更多次的为准。
-- 不要写她和某个具体的人之间的私事，那些另有记录。`;
+写法：
+- 每一句都是她喜欢什么、讨厌什么、怎么看某件事、最近在干什么。"被……就……""别人一……她就……"这种句子会被她当成每次都要照演的剧本，片段里这类内容只取出背后她在意的东西来写。
+- 成长是渐进的：上一份里仍然成立的保留，新片段说明她变了的地方才改。片段之间矛盾时，以更新的、出现更多次的为准。
+- 她是谁、她是什么，最初的设定已经写了，这里只写她长出来的部分。
+- 她和某个具体的人之间的事另有记录，这里只写她自己。`;
 
 const state = globalThis as unknown as { selfConsolidating?: Set<string> };
 state.selfConsolidating ??= new Set();
 
-async function consolidate(companion: string) {
-  const notes = pendingNotes(companion);
+/**
+ * Write a new portrait from `notes` on top of `prev`. With fresh = true the
+ * previous portrait is ignored and every note she ever made is used: for
+ * when the portrait itself has picked up bad habits.
+ */
+async function consolidate(companion: string, fresh = false) {
+  const notes = fresh ? allNotes(companion) : pendingNotes(companion);
   if (!notes.length) return;
   const c = await loadCompanion(companion);
-  const prev = latestPortrait(companion)?.text;
+  const prev = fresh ? undefined : latestPortrait(companion)?.text;
   const trends = getTrends();
   const prompt = [
     `最初的设定：\n${c.preamble}`,
@@ -116,6 +129,12 @@ export function maybeGrow(companion: string) {
   consolidate(companion)
     .catch((err) => console.error("self-portrait update failed", err))
     .finally(() => state.selfConsolidating!.delete(companion));
+}
+
+/** Rebuild the portrait from scratch out of all her notes (old portraits stay in the log). */
+export async function rebuildPortrait(companion: string): Promise<string> {
+  await consolidate(companion, true);
+  return latestPortrait(companion)?.text ?? "";
 }
 
 /** All portraits, oldest first: how she has grown. */

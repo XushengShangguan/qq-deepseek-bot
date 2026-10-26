@@ -18,7 +18,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends python3 mak
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build && npm prune --omit=dev
+# Cap the build's memory: the server is 2 GB and QQ keeps running during the
+# build (see deploy/build-on-server.sh).
+RUN NODE_OPTIONS=--max-old-space-size=768 npm run build && npm prune --omit=dev
 
 FROM ${NODE_IMAGE}
 WORKDIR /app

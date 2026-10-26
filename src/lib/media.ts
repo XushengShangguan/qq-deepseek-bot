@@ -18,7 +18,7 @@ const PROMPTS: Record<ImageKind, string> = {
     "如果像是截图就概括内容。不超过60字，只输出描述。",
 };
 
-function sniffMime(buf: Buffer): string | null {
+export function sniffMime(buf: Buffer): string | null {
   if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
   if (buf.subarray(0, 4).toString("hex") === "89504e47") return "image/png";
   if (buf.subarray(0, 3).toString("ascii") === "GIF") return "image/gif";
@@ -26,40 +26,61 @@ function sniffMime(buf: Buffer): string | null {
   return null;
 }
 
-async function download(url: string): Promise<string | null> {
+// Image hosts that refuse requests without their own site as Referer.
+const REFERERS: [RegExp, string][] = [
+  [/\.hdslb\.com$/, "https://www.bilibili.com/"],
+  [/(^|\.)tiebapic\.baidu\.com$|(^|\.)imgsrc\.baidu\.com$/, "https://tieba.baidu.com/"],
+];
+
+/** Download an image (at most maxBytes); null if it isn't one or is too big. */
+export async function fetchImage(
+  url: string,
+  maxBytes = MAX_BYTES
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const host = new URL(url).hostname;
+  const referer = REFERERS.find(([re]) => re.test(host))?.[1];
   const res = await fetch(url, {
     signal: AbortSignal.timeout(15000),
     // Some hosts reject requests without a browser-like User-Agent.
-    headers: { "User-Agent": "Mozilla/5.0 (Macintosh) companion-app" },
+    headers: { "User-Agent": "Mozilla/5.0 (Macintosh) companion-app", ...(referer ? { Referer: referer } : {}) },
   });
   if (!res.ok) {
     console.log(`WARNING: image download failed (${res.status})`);
     return null;
   }
   const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_BYTES) {
+  if (buf.length > maxBytes) {
     console.log(`WARNING: image too large (${buf.length} bytes)`);
     return null;
   }
   const mime = sniffMime(buf);
   if (!mime) console.log("WARNING: unsupported image format");
-  return mime ? `data:${mime};base64,${buf.toString("base64")}` : null;
+  return mime ? { buf, mime } : null;
+}
+
+export function toDataUrl(img: { buf: Buffer; mime: string }): string {
+  return `data:${img.mime};base64,${img.buf.toString("base64")}`;
+}
+
+async function download(url: string): Promise<string | null> {
+  const img = await fetchImage(url);
+  return img ? toDataUrl(img) : null;
 }
 
 /** e.g. "[表情包：一只猫翻白眼，配字'无语'，表示很无语]"; falls back to a plain placeholder. */
 export async function describeImage(url: string | undefined, kind: ImageKind): Promise<string> {
   const label = kind === "sticker" ? "表情包" : "图片";
-  if (!url || process.env.IMAGE_UNDERSTANDING === "off") return `[${label}]`;
+  if (!url || process.env.IMAGE_UNDERSTANDING === "off") return `[${label}：没加载出来，你看不到内容]`;
   try {
     const llm = await getLLM();
-    if (!llm.describeImage) return `[${label}]`;
+    if (!llm.describeImage) return `[${label}：没加载出来，你看不到内容]`;
     const dataUrl = await download(url);
-    if (!dataUrl) return `[${label}]`;
+    if (!dataUrl) return `[${label}：没加载出来，你看不到内容]`;
     const text = (await llm.describeImage(dataUrl, PROMPTS[kind])).replace(/\s+/g, " ").trim();
     return text ? `[${label}：${text}]` : `[${label}]`;
   } catch (err) {
     console.log(`WARNING: could not describe ${label}`, err);
-    return `[${label}]`;
+    return `[${label}：没加载出来，你看不到内容]`;
   }
 }
 

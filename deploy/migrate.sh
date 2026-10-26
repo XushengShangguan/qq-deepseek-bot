@@ -35,8 +35,9 @@ cp napcat/.env deploy/.env
 # On the server NapCat reaches the app by compose service name.
 sed -i 's#http://host.docker.internal:3000/api/qq/webhook#http://app:3000/api/qq/webhook#' \
   napcat/data/config/onebot11*.json
+bash deploy/build-on-server.sh "$1"
 cd deploy
-docker compose up -d --build
+docker compose up -d --no-build
 docker compose ps
 REMOTE
 

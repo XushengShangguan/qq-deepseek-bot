@@ -2,9 +2,14 @@ import { lookup } from "dns/promises";
 import { isIP } from "net";
 
 // Read-only web access for her free time: read a page, look up a term,
-// browse Bilibili. Everything returns plain text, trimmed to keep tokens sane.
-// Nothing here can reach this machine or the local network (NapCat's API is on
-// localhost), so a page she opens can't be used to poke at the bot.
+// browse Bilibili and Tieba. Everything returns plain text, trimmed to keep
+// tokens sane. Nothing here can reach this machine or the local network
+// (NapCat's API is on localhost), so a page she opens can't be used to poke at
+// the bot.
+
+// Images inside results are written as "[图片 <url>]"; the free-time loop
+// swaps those for short labels she can refer to (see life.ts).
+export const IMAGE_TOKEN = /\[图片 (https?:\/\/[^\s\]]+)\]/g;
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36";
@@ -135,12 +140,22 @@ export async function biliVideo(ref: string): Promise<string> {
     getJson(`https://api.bilibili.com/x/web-interface/archive/desc?aid=${aid}`)
       .then((d) => String(d.data ?? ""))
       .catch(() => ""),
-    biliComments(Number(aid)).catch(() => [] as string[]),
+    getJson(`https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=1&ps=15`)
+      .then((r) => (r.data?.replies ?? []) as any[])
+      .catch(() => [] as any[]),
   ]);
-  if (!desc && !comments.length) throw new Error("找不到这个视频");
+  // Comments with the pictures people attached (often reaction images).
+  const lines = comments
+    .map((c) => {
+      const text = String(c.content?.message ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+      const pics = ((c.content?.pictures ?? []) as any[]).map((p) => `[图片 ${p.img_src}]`).join(" ");
+      return [text, pics].filter(Boolean).join(" ");
+    })
+    .filter(Boolean);
+  if (!desc && !lines.length) throw new Error("找不到这个视频");
   return [
     desc ? `简介：${desc.slice(0, 300)}` : "",
-    comments.length ? `热门评论：\n${comments.map((c) => `- ${c}`).join("\n")}` : "",
+    lines.length ? `热门评论：\n${lines.map((c) => `- ${c}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -196,8 +211,14 @@ export async function tiebaThread(ref: string): Promise<string> {
   if (!posts.length) throw new Error("帖子打不开或已被删");
   const title = d.data?.thread?.title ?? posts[0]?.title ?? "";
   const floors = posts
-    .map((p) => ({ floor: Number(p.floor), text: tiebaText(p.content) }))
+    .map((p) => {
+      const pics = ((p.content ?? []) as any[])
+        .filter((c) => Number(c.type) === 3 && /^https?:/.test(String(c.src ?? "")))
+        .map((c) => `[图片 ${c.src}]`)
+        .join(" ");
+      return { floor: Number(p.floor), text: [tiebaText(p.content).slice(0, 150), pics].filter(Boolean).join(" ") };
+    })
     .filter((p) => p.text)
-    .map((p) => `${p.floor === 1 ? "楼主" : `${p.floor}楼`}：${p.text.slice(0, 150)}`);
+    .map((p) => `${p.floor === 1 ? "楼主" : `${p.floor}楼`}：${p.text}`);
   return [title ? `标题：${title}` : "", ...floors].filter(Boolean).join("\n");
 }
