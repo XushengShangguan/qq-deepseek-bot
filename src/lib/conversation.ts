@@ -9,6 +9,7 @@ import {
   type Memory,
   type Session,
 } from "./memory";
+import { draftFileName, recentDocuments, saveDocument, takeDrafts, type Draft, type StoredDocument } from "./documents";
 import { recentDiary } from "./journal";
 import { currentOuting } from "./outing";
 import { getSelf, type SelfState } from "./self";
@@ -56,9 +57,10 @@ export function buildCompanionPrompt(args: {
   trends?: string;
   diary?: string[];
   stickers?: Sticker[];
+  documents?: StoredDocument[];
   userTimezone?: string;
 }): string {
-  const { companion: c, userName, memories, relationship, events, self, trends, diary, stickers } = args;
+  const { companion: c, userName, memories, relationship, events, self, trends, diary, stickers, documents } = args;
   const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
   const difference = describeDifference(userTz, COMPANION_TIMEZONE);
   const sections = [
@@ -100,10 +102,18 @@ export function buildCompanionPrompt(args: {
         events.map((e) => `- ${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.event}`).join("\n")
     );
   }
+  if (documents?.length) {
+    sections.push(
+      `## 文件\n${userName}发给你的、你给他整理过的文件，最近这几个：\n` +
+        documents
+          .map((d) => `### ${d.name}（${formatStamp(d.created_at, COMPANION_TIMEZONE)}）\n${d.text}`)
+          .join("\n\n")
+    );
+  }
   sections.push(
     stickers?.length
       ? `## 你收藏的表情包
-想甩一张的时候，单独一行写 [表情包:编号]，一次最多一张；大部分时候用不着。
+这些是你自己攒的，发不发、什么时候发、发哪张都是你自己的事，想发就发。发的时候单独一行写 [表情包:编号]。
 ${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`
       : `## 你收藏的表情包\n还没有。你在自己的自由时间里逛 B 站、贴吧时才能找图收藏。`
   );
@@ -114,6 +124,7 @@ ${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`
 - 话要挂在具体的东西上：他说过的、你自己看到过的、眼前这条消息。没看到、打不开、不知道的，就说没看到、不知道。
 - 聊天的时候你能做的只有打字和发你收藏里的表情包，刷 B 站、逛贴吧、找图都得等你自己去逛。他让你去找什么、你也想去的话，单独一行写 [去逛]，聊完你就会去；在你逛回来之前，你什么都还没看到。
 - 他是你的朋友，不归你管：他说累、说要睡、说在外面，接住就好。
+- 他让你整理东西（总结、提纲、笔记、对比、改格式）时，整理好的内容写成文件发他：单独一行 [文档:标题] 开头，单独一行 [/文档] 结尾，中间用 # 标题、- 列表和段落，写完整、写清楚；文件外面照常跟他说一两句。
 - 方括号是他发来的东西：[图片：…][表情包：…] 是你看到的画面，只发图没配字时图就是他要说的话，他问图就认真看图回答；只有 [图片]、[视频]、[语音] 没写内容，就是你没看到。他发的链接你点不开，只看得到他打的字。
 
 ## 本轮
@@ -175,6 +186,7 @@ async function prepareTurn(msg: IncomingMessage) {
     trends: getTrends(),
     diary: recentDiary(msg.companion),
     stickers: stickersForPrompt(msg.companion),
+    documents: recentDocuments(session),
     userTimezone: msg.userTimezone,
   });
   return { session, system, recentMessages };
@@ -210,19 +222,30 @@ function serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
 // other person.
 const OUTING_LINE = /[ \t]*\[去逛\][ \t]*/g;
 
-/** Full reply in one piece (QQ and other message channels). */
-export function handleMessage(msg: IncomingMessage): Promise<string> {
+export type Reply = { text: string; drafts: Draft[] };
+
+/**
+ * Full reply in one piece (QQ and other message channels): the chat text,
+ * plus any documents she wrote, to be sent as files.
+ */
+export function handleMessage(msg: IncomingMessage): Promise<Reply> {
   return serialize(`${msg.userId}|${msg.companion}`, async () => {
     const { session, system, recentMessages } = await prepareTurn(msg);
     const llm = await getLLM();
-    let reply = stripStageDirections(await llm.generate(system, recentMessages, { purpose: "chat" }));
+    // Room for a whole organized document; chat replies stay short anyway.
+    const raw = await llm.generate(system, recentMessages, { purpose: "chat", maxTokens: 8000 });
+    const { rest, drafts } = takeDrafts(raw);
+    let reply = stripStageDirections(rest);
     if (reply.includes("[去逛]")) {
       reply = reply.replace(OUTING_LINE, "").replace(/\n{2,}/g, "\n").trim() || "行 我去逛逛";
       // Imported here: life.ts depends on qq.ts, which depends on this file.
       (await import("./life")).requestOuting(msg.companion);
     }
-    finishTurn(session, msg, reply);
-    return reply;
+    if (drafts.length && !reply) reply = "整理好了 发你了";
+    // She can see what she wrote when asked to change it.
+    for (const d of drafts) saveDocument(session, `你整理的：${draftFileName(d)}`, d.body);
+    finishTurn(session, msg, [reply, ...drafts.map((d) => `（发了文件：${draftFileName(d)}）`)].join("\n"));
+    return { text: reply, drafts };
   });
 }
 

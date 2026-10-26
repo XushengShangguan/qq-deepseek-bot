@@ -7,7 +7,8 @@ const nextConfig = {
     // One build worker: parallel workers ran the 2 GB server out of memory.
     cpus: 1,
     // Native module; load it from node_modules at runtime instead of bundling.
-    serverComponentsExternalPackages: ["better-sqlite3"],
+    // pdfkit reads its font data files from its package folder at runtime.
+    serverComponentsExternalPackages: ["better-sqlite3", "pdfkit", "unpdf", "mammoth"],
   },
   images: {
     remotePatterns: [

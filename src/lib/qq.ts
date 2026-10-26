@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { handleMessage } from "./conversation";
+import { draftFileName, extractDocument, READABLE, renderPdf, saveDocument } from "./documents";
 import { describeImage, qqFaceName } from "./media";
 import { collectReceivedSticker, getSticker, markUsed, STICKER_LINE, stickerBase64 } from "./stickers";
 
@@ -75,8 +76,48 @@ export function verifySignature(rawBody: string, header: string | null): boolean
 const PLACEHOLDERS: Record<string, string> = {
   record: "[语音]",
   video: "[视频]",
-  file: "[文件]",
 };
+
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+/** Where to download a file someone sent: NapCat's answer differs by version. */
+async function fileUrl(data: Record<string, any>): Promise<string | null> {
+  if (typeof data.url === "string" && /^https?:/.test(data.url)) return data.url;
+  const id = data.file_id ?? data.fid;
+  if (!id) return null;
+  for (const action of ["get_private_file_url", "get_file"]) {
+    try {
+      const res = await callNapCat(action, { file_id: id }, 20000);
+      const d = res.data ?? {};
+      if (typeof d.url === "string" && /^https?:/.test(d.url)) return d.url;
+      if (typeof d.base64 === "string" && d.base64) return `data:application/octet-stream;base64,${d.base64}`;
+    } catch (err) {
+      console.log(`WARNING: NapCat ${action} failed`, String(err));
+    }
+  }
+  return null;
+}
+
+/** Read a PDF / Word file a friend sent and keep its text for her. */
+async function readFileSegment(data: Record<string, any>, qq: string): Promise<string> {
+  const name = String(data.file ?? data.name ?? "文件");
+  if (!READABLE.test(name)) return `[文件：${name}，这种文件你打不开，只能看 PDF 和 Word]`;
+  if (Number(data.file_size) > MAX_FILE_BYTES) return `[文件：${name}，太大了没打开]`;
+  try {
+    const url = await fileUrl(data);
+    if (!url) throw new Error("下载不下来");
+    const buf = url.startsWith("data:")
+      ? Buffer.from(url.slice(url.indexOf(",") + 1), "base64")
+      : Buffer.from(await (await fetch(url, { signal: AbortSignal.timeout(60000) })).arrayBuffer());
+    const { text, summary } = await extractDocument(buf, name);
+    saveDocument({ userId: `qq:${qq}`, companion: COMPANION }, name, text);
+    console.log(`INFO: read ${name} from ${qq} (${summary})`);
+    return `[文件：${name}，${summary}，你已经看完了，内容在"文件"里]`;
+  } catch (err) {
+    console.log(`WARNING: could not read ${name}`, String(err));
+    return `[文件：${name}，没打开：${err instanceof Error ? err.message : "出错了"}]`;
+  }
+}
 
 function unescapeCQ(s: string) {
   return s
@@ -108,6 +149,8 @@ async function segmentToText(seg: Segment, qq: string): Promise<string> {
         : `[表情包：${String(data.summary ?? "").replace(/[\[\]]/g, "")}]`;
     case "face":
       return qqFaceName(data.id);
+    case "file":
+      return readFileSegment(data, qq);
     default:
       return PLACEHOLDERS[seg.type] ?? "";
   }
@@ -191,7 +234,7 @@ export function handleIncoming(event: OneBotEvent): string | null {
 async function replyTo(qq: string, userName: string, text: string, receivedAt: number) {
   console.log(`QQ ${qq} -> ${text}`);
   const t0 = Date.now();
-  const reply = await handleMessage({
+  const { text: reply, drafts } = await handleMessage({
     userId: `qq:${qq}`,
     userName,
     companion: COMPANION,
@@ -200,6 +243,14 @@ async function replyTo(qq: string, userName: string, text: string, receivedAt: n
   });
   const generated = Date.now() - t0;
   await sendInPieces(qq, reply, { receivedAt, incoming: text });
+  for (const d of drafts) {
+    try {
+      await sendFile(qq, await renderPdf(d), draftFileName(d));
+    } catch (err) {
+      console.log(`WARNING: file not sent: ${draftFileName(d)}`, String(err));
+      await sendPrivateMessage(qq, "文件没发出去 我再试试").catch(() => {});
+    }
+  }
   console.log(`QQ ${qq} <- replied (generate ${generated}ms, total ${Date.now() - t0}ms)`);
 }
 
@@ -232,6 +283,16 @@ async function callNapCat(
 
 export function sendPrivateMessage(qq: string, text: string) {
   return callNapCat("send_private_msg", { user_id: Number(qq), message: text });
+}
+
+/** Send a file (e.g. a PDF she made) as a QQ file message. */
+export async function sendFile(qq: string, buf: Buffer, name: string) {
+  await callNapCat(
+    "upload_private_file",
+    { user_id: Number(qq), file: `base64://${buf.toString("base64")}`, name },
+    60000
+  );
+  console.log(`INFO: sent file ${name} to ${qq} (${buf.length} bytes)`);
 }
 
 /** Send one of her stickers; false if it no longer exists. */
@@ -296,7 +357,12 @@ function breakLongLine(line: string): string[] {
  * counts toward the cap.
  */
 export function splitIntoMessages(reply: string): string[] {
-  const lines = reply.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const lines = reply
+    // She sometimes tacks the sticker onto the end of a sentence.
+    .replace(/[ \t]*(\[表情包[:：]\s*\d+\s*\])[ \t]*/g, "\n$1\n")
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   const stickerAt = lines.findIndex((l) => STICKER_LINE.test(l));
   const sticker = stickerAt >= 0 ? lines[stickerAt] : undefined;
   const text = lines.filter((l) => !STICKER_LINE.test(l));

@@ -19,7 +19,8 @@ docker compose stop app
 # If the build fails, bring the previous image back up.
 trap 'echo "==> Build failed, restarting the previous version"; docker compose up -d --no-build app' ERR
 echo "==> Building (low priority)"
-nice -n 15 docker compose build app
+# A stuck download once hung `npm ci` with the app down; give up instead.
+timeout 30m nice -n 15 docker compose build app
 echo "==> Starting the new app"
 docker compose up -d --no-build app
 docker compose ps

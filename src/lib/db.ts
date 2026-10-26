@@ -106,6 +106,18 @@ CREATE TABLE IF NOT EXISTS stickers (
   use_count     INTEGER NOT NULL DEFAULT 0,
   UNIQUE (companion, hash)
 );
+
+-- Files friends sent her (PDF / Word), as extracted text (documents.ts).
+CREATE TABLE IF NOT EXISTS documents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     TEXT    NOT NULL,
+  companion   TEXT    NOT NULL,
+  name        TEXT    NOT NULL,
+  text        TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_documents_session
+  ON documents (user_id, companion, created_at);
 `;
 
 // Next.js dev mode re-evaluates modules on every change; keep one connection.

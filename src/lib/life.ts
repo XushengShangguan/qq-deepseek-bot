@@ -6,7 +6,7 @@ import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { setOuting } from "./outing";
 import { addSelfNote, getSelf, maybeGrow } from "./self";
-import { countStickers, lookAtImage, saveSticker } from "./stickers";
+import { countStickers, lookAtImage, saveSticker, stickersForPrompt } from "./stickers";
 import { COMPANION_TIMEZONE, DEFAULT_USER_TIMEZONE, cityName, formatDate, formatGap, formatNow, hourIn } from "./time";
 import { getTrends } from "./trends";
 import {
@@ -289,6 +289,7 @@ async function systemPrompt(companion: string): Promise<string> {
   const self = getSelf(companion);
   const trends = getTrends();
   const diary = recentJournal(companion, "diary", 3 * DAY_MS, 6);
+  const stickers = stickersForPrompt(companion);
   const people = qqPeople()
     .map((p) => {
       const last = lastChatAt(companion, p);
@@ -315,6 +316,11 @@ async function systemPrompt(companion: string): Promise<string> {
       ? `## 你之前的日记\n${diary.map((e) => `- ${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.content}`).join("\n")}`
       : "",
     people ? `## 你的朋友们\n${people}` : "",
+    stickers.length
+      ? `## 你收藏的表情包\n找朋友说话时想甩一张就在消息里单独一行写 [表情包:编号]。\n${stickers
+          .map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`)
+          .join("\n")}`
+      : "",
     `## 现在
 你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。现在是你自己的自由时间，没有人在跟你聊天。
 想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、逛贴吧看吧友吵架、查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；

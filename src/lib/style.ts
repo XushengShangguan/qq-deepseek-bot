@@ -38,7 +38,9 @@ export function stripStageDirections(text: string): string {
     // "[图片：…]" / "[表情包：…]" describe what the other person sent; written
     // by her they'd go out as text pretending to be a picture. ("[表情包:12]",
     // a number only, is her real sticker command and stays.)
-    .replace(/\[(图片|表情包|视频|语音|QQ表情)([：:](?!\s*\d+\s*\])[^\]\n]*)?\]/g, "")
+    .replace(/\[(图片|表情包|视频|语音|QQ表情|文件)([：:](?!\s*\d+\s*\])[^\]\n]*)?\]/g, "")
+    // History marks the files she sent as "（发了文件：x.pdf）"; that's not hers to type.
+    .replace(/[（(]发了文件[：:][^）)\n]*[）)]/g, "")
     .split("\n")
     .map((line) =>
       line.replace(/[（(][^（()）]*\p{Script=Han}[^（()）]*[）)]/gu, (m) =>
