@@ -10,6 +10,7 @@ import {
   type Session,
 } from "./memory";
 import { recentDiary } from "./journal";
+import { currentOuting } from "./outing";
 import { getSelf, type SelfState } from "./self";
 import { stickersForPrompt, type Sticker } from "./stickers";
 import { stripStageDirections, turnStyleHints } from "./style";
@@ -99,22 +100,31 @@ export function buildCompanionPrompt(args: {
         events.map((e) => `- ${formatDate(e.created_at, COMPANION_TIMEZONE)}：${e.event}`).join("\n")
     );
   }
-  if (stickers?.length) {
-    sections.push(`## 你收藏的表情包
+  sections.push(
+    stickers?.length
+      ? `## 你收藏的表情包
 想甩一张的时候，单独一行写 [表情包:编号]，一次最多一张；大部分时候用不着。
-${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`);
-  }
+${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`
+      : `## 你收藏的表情包\n还没有。你在自己的自由时间里逛 B 站、贴吧时才能找图收藏。`
+  );
   sections.push(`## 怎么说话
 - 这是 QQ 私聊，每一行是一条单独的消息，纯文字，一条一般几个字到二十来个字。
 - 每句话都是对${userName}说的那句话本身：接他的话、回他的问题、说你自己真想说的。一句话换到别的场合也能原样说、删掉也不少什么，就不用说。
 - 他明确要你做的事（看图、评价、出主意、讲清楚一件事）就认真做，有看法直说；你也有不想做的权利，那得是你真不想。
 - 话要挂在具体的东西上：他说过的、你自己看到过的、眼前这条消息。没看到、打不开、不知道的，就说没看到、不知道。
+- 聊天的时候你能做的只有打字和发你收藏里的表情包，刷 B 站、逛贴吧、找图都得等你自己去逛。他让你去找什么、你也想去的话，单独一行写 [去逛]，聊完你就会去；在你逛回来之前，你什么都还没看到。
 - 他是你的朋友，不归你管：他说累、说要睡、说在外面，接住就好。
 - 方括号是他发来的东西：[图片：…][表情包：…] 是你看到的画面，只发图没配字时图就是他要说的话，他问图就认真看图回答；只有 [图片]、[视频]、[语音] 没写内容，就是你没看到。他发的链接你点不开，只看得到他打的字。
 
 ## 本轮
 ${turnStyleHints()}
-- 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。
+- 你在${cityName(COMPANION_TIMEZONE)}，你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。${
+  currentOuting() === "pending"
+    ? "\n- 你刚说了要去逛，还没出发，还什么都没看到。"
+    : currentOuting() === "running"
+      ? "\n- 你正在外面逛，还没逛完，逛到了什么得等回来才知道。"
+      : ""
+}
 - 日期对照（你那边）：${describeNearbyDays(COMPANION_TIMEZONE)}。说"昨天""明天""周末"时按这个算。
 - 聊天记录里开头的 [日期 时间] 是系统标的发送时间，只在隔了一阵或换了一天时出现：昨晚说了晚安，今天再聊就是新的一天；昨天说"明天考试"，那就是今天。
 ${
@@ -195,12 +205,22 @@ function serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+// "[去逛]" in her reply (meant for its own line, sometimes tacked onto a
+// sentence): she's going off to browse after this chat. Never shown to the
+// other person.
+const OUTING_LINE = /[ \t]*\[去逛\][ \t]*/g;
+
 /** Full reply in one piece (QQ and other message channels). */
 export function handleMessage(msg: IncomingMessage): Promise<string> {
   return serialize(`${msg.userId}|${msg.companion}`, async () => {
     const { session, system, recentMessages } = await prepareTurn(msg);
     const llm = await getLLM();
-    const reply = stripStageDirections(await llm.generate(system, recentMessages, { purpose: "chat" }));
+    let reply = stripStageDirections(await llm.generate(system, recentMessages, { purpose: "chat" }));
+    if (reply.includes("[去逛]")) {
+      reply = reply.replace(OUTING_LINE, "").replace(/\n{2,}/g, "\n").trim() || "行 我去逛逛";
+      // Imported here: life.ts depends on qq.ts, which depends on this file.
+      (await import("./life")).requestOuting(msg.companion);
+    }
     finishTurn(session, msg, reply);
     return reply;
   });

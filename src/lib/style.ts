@@ -35,6 +35,10 @@ export function stripStageDirections(text: string): string {
   return text
     // Echoed history timestamps like "[10月22日 周三 09:10]".
     .replace(/\[\d{1,2}月\d{1,2}日[^\]]*\]\s*/g, "")
+    // "[图片：…]" / "[表情包：…]" describe what the other person sent; written
+    // by her they'd go out as text pretending to be a picture. ("[表情包:12]",
+    // a number only, is her real sticker command and stays.)
+    .replace(/\[(图片|表情包|视频|语音|QQ表情)([：:](?!\s*\d+\s*\])[^\]\n]*)?\]/g, "")
     .split("\n")
     .map((line) =>
       line.replace(/[（(][^（()）]*\p{Script=Han}[^（()）]*[）)]/gu, (m) =>

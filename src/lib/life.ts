@@ -4,6 +4,7 @@ import { getDb } from "./db";
 import { addJournal, recentJournal } from "./journal";
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
+import { setOuting } from "./outing";
 import { addSelfNote, getSelf, maybeGrow } from "./self";
 import { countStickers, lookAtImage, saveSticker } from "./stickers";
 import { COMPANION_TIMEZONE, DEFAULT_USER_TIMEZONE, cityName, formatDate, formatGap, formatNow, hourIn } from "./time";
@@ -377,7 +378,35 @@ export async function liveOnce(companion = QQ_COMPANION): Promise<string[]> {
 
 // ---------- scheduler ----------
 
-const state = globalThis as unknown as { lifeTimer?: NodeJS.Timeout; lifeRunning?: boolean };
+const state = globalThis as unknown as {
+  lifeTimer?: NodeJS.Timeout;
+  lifeRunning?: boolean;
+  outingTimer?: NodeJS.Timeout;
+};
+
+/**
+ * She said in chat she'd go and look for something ("[去逛]"): start a
+ * free-time session shortly, outside the usual schedule. One at a time.
+ */
+export function requestOuting(companion = QQ_COMPANION, delayMs = 60_000) {
+  if (!ENABLED || state.outingTimer || state.lifeRunning) return;
+  console.log(`INFO: ${companion} is going out to browse in ${delayMs / 1000}s`);
+  setOuting("pending");
+  state.outingTimer = setTimeout(async () => {
+    state.outingTimer = undefined;
+    if (state.lifeRunning) return setOuting(null);
+    state.lifeRunning = true;
+    setOuting("running");
+    try {
+      await liveOnce(companion);
+    } catch (err) {
+      console.error("outing failed", err);
+    } finally {
+      state.lifeRunning = false;
+      setOuting(null);
+    }
+  }, delayMs);
+}
 
 // setTimeout silently turns anything over ~24.8 days into 1 ms.
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
