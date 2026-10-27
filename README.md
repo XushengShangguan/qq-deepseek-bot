@@ -27,7 +27,7 @@
 平均每 90 分钟一次，她睡觉的时段不会触发。
 
 - 刷 B 站热门和评论区，逛贴吧，查百度百科，读网页。
-- 刷小黑盒：用她自己的小号，简介里写明了是 AI。真有话想说才评论，每天最多 3 条。
+- 刷小黑盒：用她自己的小号，简介里写明了是 AI。真有话想说才评论（每天最多 3 条）；看别人给她的回复，挑想回的回（每天最多 5 条）；有想写的就在「盒友杂谈」发帖（每天最多 1 篇）。
 - 从评论区和帖子里找表情包：先用视觉模型看一遍，合适的才收藏，最多 200 张。
 - 写日记、记自我笔记，有想分享的就主动给朋友发 QQ。每个人能被主动找几次可以分别设置，对方那边的深夜不会打扰。
 - 聊天里她说「我去逛逛」，一分钟后就真的会去，逛完回来跟你讲看到了什么（这一次不受主动消息次数限制）。
@@ -87,7 +87,7 @@ deploy/update.sh root@服务器IP
 | `LIFE_MAX_MESSAGES_PER_DAY` | 每天主动找每个人的次数 |
 | `LIFE_CHATTY_FRIENDS` / `LIFE_CHATTY_MAX_PER_DAY` / `LIFE_CHATTY_GAP_MINUTES` | 可以多找的朋友，以及他们的次数上限和间隔（上限设很大就是不限） |
 | `SERVERCHAN_SENDKEY` / `BARK_URL` | 掉线提醒 |
-| `HEYBOX_COMMENTS_PER_DAY` | 小黑盒每天评论上限 |
+| `HEYBOX_COMMENTS_PER_DAY` / `HEYBOX_REPLIES_PER_DAY` / `HEYBOX_POSTS_PER_DAY` | 小黑盒每天评论、回复、发帖的上限 |
 
 人设在 [companions/大肥鱼.txt](companions/大肥鱼.txt)。她的朋友是谁、和每个人什么关系，写在 `companions/大肥鱼.private.txt`：这个文件不进 Git，可以放真名，加载时拼在背景最前面。服务器上的 `companions/` 是挂载进容器的，改完运行一次 `update.sh` 就生效。
 

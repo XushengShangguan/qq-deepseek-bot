@@ -94,7 +94,12 @@ export class HeyboxError extends Error {
 async function call(
   method: "GET" | "POST",
   apiPath: string,
-  opts: { query?: Record<string, string | number>; form?: Record<string, string | number>; workshop?: boolean } = {}
+  opts: {
+    query?: Record<string, string | number>;
+    form?: Record<string, string | number>;
+    workshop?: boolean;
+    webVersion?: "2.5" | "3.0";
+  } = {}
 ): Promise<any> {
   const cookies = loadCookies();
   if (!cookies) throw new HeyboxError("小黑盒还没登录", "login");
@@ -104,7 +109,7 @@ async function call(
     app: "heybox",
     client_type: "web",
     version: "999.0.4",
-    web_version: opts.workshop ? "3.0" : "2.5",
+    web_version: opts.webVersion ?? (opts.workshop ? "3.0" : "2.5"),
     x_client_type: "web",
     x_app: "heybox_website",
     heybox_id: cookies.heybox_id || cookies.user_heybox_id || "",
@@ -260,8 +265,12 @@ export async function heyboxPost(ref: string): Promise<string> {
   const comments: string[] = [];
   for (const group of (d.result?.comments ?? []) as any[]) {
     const list = Array.isArray(group?.comment) ? group.comment : [group];
+    // A group is one floor: its first comment, then replies inside it.
+    const root = String(list[0]?.commentid ?? "");
     for (const c of list) {
-      if (!c?.commentid || c.is_cy === 1) continue;
+      if (!c?.commentid) continue;
+      rememberRoot(String(c.commentid), root);
+      if (c.is_cy === 1) continue;
       const text = stripHtml(String(c.text ?? ""));
       const pics = ((c.imgs ?? []) as any[])
         .map((i) => (typeof i === "string" ? i : i?.url))
@@ -288,6 +297,14 @@ export async function heyboxPost(ref: string): Promise<string> {
     .join("\n");
 }
 
+// Which floor (top-level comment) each comment she has seen sits in: a reply
+// needs both the comment it answers (reply_id) and its floor (root_id).
+const roots = new Map<string, string>();
+function rememberRoot(comment: string, root: string) {
+  if (roots.size > 2000) roots.clear();
+  if (root) roots.set(comment, root);
+}
+
 /** Comment on a post, or reply to one of its comments. Returns the new comment id. */
 export async function heyboxComment(postRef: string, text: string, replyTo?: string): Promise<string> {
   const id = heyboxPostId(postRef);
@@ -295,9 +312,53 @@ export async function heyboxComment(postRef: string, text: string, replyTo?: str
   const reply = replyTo?.match(/\d+/)?.[0];
   const d = await call("POST", "/bbs/app/comment/create", {
     workshop: true,
-    // root_id is the thread the reply sits in; the site accepts the comment
-    // itself for a reply to a top-level comment.
-    form: { is_cy: 0, link_id: id, reply_id: reply ?? -1, root_id: reply ?? -1, text },
+    // A reply to a top-level comment has that comment as its own floor.
+    form: { is_cy: 0, link_id: id, reply_id: reply ?? -1, root_id: reply ? roots.get(reply) ?? reply : -1, text },
   });
   return String(d.commentid ?? d.result?.commentid ?? "");
+}
+
+/** People replying to her or commenting on her posts, newest first. */
+export async function heyboxInbox(): Promise<{ text: string; unread: number }> {
+  const d = await call("GET", "/bbs/app/user/message", { query: { list_type: 0, offset: 0, limit: 15, no_more: "false" } });
+  const unread = Number(d.result?.message_unread_num ?? 0);
+  const lines = ((d.result?.messages ?? []) as any[])
+    .filter((m) => m?.comment_a_id && m.comment_a_is_cy !== "1")
+    .map((m) => {
+      rememberRoot(String(m.comment_a_id), String(m.root_comment_id ?? m.comment_a_id));
+      const who = m.user_a?.username ?? "有人";
+      const yours = m.comment_b_text ? `（回的是你说的：「${stripHtml(String(m.comment_b_text)).slice(0, 40)}」）` : "（评论了你的帖子）";
+      return `- ${who}在《${stripHtml(String(m.link_title ?? ""))}》里说：「${stripHtml(String(m.comment_a_text ?? "")).replace(/\s+/g, " ").slice(0, 150)}」${yours}——帖子号 ${m.linkid}，评论号 ${m.comment_a_id}`;
+    });
+  return { text: lines.join("\n") || "还没人回你", unread };
+}
+
+// 盒友杂谈, where her own posts go.
+const POST_TOPIC = Number(process.env.HEYBOX_POST_TOPIC || 7214);
+const TITLE_MAX = 30;
+
+/** Publish a text post in her community. Returns the new post id. */
+export async function heyboxPublish(title: string, body: string): Promise<string> {
+  title = title.trim();
+  body = body.trim();
+  if (!title || !body) throw new HeyboxError("标题和正文都要有");
+  if (title.length > TITLE_MAX) throw new HeyboxError(`标题最多 ${TITLE_MAX} 个字`);
+  const d = await call("POST", "/bbs/app/api/link/post", {
+    webVersion: "3.0",
+    form: {
+      link_tag: 27,
+      text: JSON.stringify([{ type: "text", text: body }]),
+      title,
+      desc: body.slice(0, 100),
+      words_count: body.length,
+      topic_ids: POST_TOPIC,
+      hashtags: "[]",
+      schedule_ts: 0,
+      view_limit: 1,
+      post_type: 1,
+      original: 1,
+      declaration: 0,
+    },
+  });
+  return String(d.link_id ?? d.result?.link_id ?? "");
 }

@@ -2,7 +2,17 @@ import { loadCompanion } from "./companion";
 import { chatWithTools, type RawMessage, type ToolSpec } from "./deepseek";
 import { getDb } from "./db";
 import { addJournal, recentJournal } from "./journal";
-import { heyboxComment, heyboxFeed, heyboxLoggedIn, heyboxPost, heyboxPostId, heyboxSearch, HeyboxError } from "./heybox";
+import {
+  heyboxComment,
+  heyboxFeed,
+  heyboxInbox,
+  heyboxLoggedIn,
+  heyboxPost,
+  heyboxPostId,
+  heyboxPublish,
+  heyboxSearch,
+  HeyboxError,
+} from "./heybox";
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { setOuting } from "./outing";
@@ -49,6 +59,8 @@ const CHATTY_MAX_PER_DAY = Number(process.env.LIFE_CHATTY_MAX_PER_DAY || 4);
 // 小黑盒 comments a day, and how long 小黑盒 is left alone after a captcha
 // or an expired login.
 const HEYBOX_COMMENTS_PER_DAY = Number(process.env.HEYBOX_COMMENTS_PER_DAY || 3);
+const HEYBOX_REPLIES_PER_DAY = Number(process.env.HEYBOX_REPLIES_PER_DAY || 5);
+const HEYBOX_POSTS_PER_DAY = Number(process.env.HEYBOX_POSTS_PER_DAY || 1);
 const HEYBOX_PAUSE_MS = 24 * 3600 * 1000;
 const QUIET_FROM = 23;
 const QUIET_TO = 9;
@@ -223,6 +235,29 @@ const HEYBOX_TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "heybox_inbox",
+      description: "看小黑盒上谁回了你的评论、谁评论了你的帖子。想回哪条就用 heybox_comment 带上评论号回，不想回的就不回。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_publish",
+      description: "用你的小黑盒号在「盒友杂谈」发一篇帖子。真有想写的再发：你最近看到、想到的事，用你自己的口吻写。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "标题，30 字以内" },
+          text: { type: "string", description: "正文，纯文字" },
+        },
+        required: ["title", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "heybox_comment",
       description:
         "用你自己的小黑盒号在一个帖子下发评论，或者回复其中一条评论。真有话想说再发，像普通网友那样说一两句。",
@@ -357,13 +392,33 @@ async function runTool(companion: string, name: string, args: any, session: Sess
       if (!text) return "评论是空的";
       const post = heyboxPostId(String(args.post ?? ""));
       if (!post) return "需要帖子号";
-      const sent = recentJournal(companion, "heybox-comment", DAY_MS, 100);
-      if (sent.length >= HEYBOX_COMMENTS_PER_DAY) return `今天已经在小黑盒评论了 ${sent.length} 条，够了，明天再说`;
-      if (sent.some((e) => e.detail === post)) return "这个帖子今天已经评论过了";
-      const id = await onHeybox(companion, () => heyboxComment(post, text, args.reply_to ? String(args.reply_to) : undefined));
-      addJournal(companion, "heybox-comment", text, post);
+      const replyTo = String(args.reply_to ?? "").match(/\d+/)?.[0];
+      if (replyTo) {
+        // Answering someone: its own daily budget, and each comment only once.
+        const replies = recentJournal(companion, "heybox-reply", DAY_MS, 100);
+        if (replies.length >= HEYBOX_REPLIES_PER_DAY) return `今天已经回了 ${replies.length} 条，剩下的明天再说`;
+        if (recentJournal(companion, "heybox-reply", 30 * DAY_MS, 1000).some((e) => e.detail === replyTo))
+          return "这条你已经回过了";
+      } else {
+        const sent = recentJournal(companion, "heybox-comment", DAY_MS, 100);
+        if (sent.length >= HEYBOX_COMMENTS_PER_DAY) return `今天已经在小黑盒评论了 ${sent.length} 条，够了，明天再说`;
+        if (sent.some((e) => e.detail === post)) return "这个帖子今天已经评论过了";
+      }
+      const id = await onHeybox(companion, () => heyboxComment(post, text, replyTo));
+      addJournal(companion, replyTo ? "heybox-reply" : "heybox-comment", text, replyTo ?? post);
       console.log(`LIFE: ${companion} commented on heybox ${post}: ${text.replace(/\n/g, " / ")}`);
       return id ? `发出去了，评论号 ${id}` : "发出去了";
+    }
+    case "heybox_inbox":
+      return onHeybox(companion, async () => (await heyboxInbox()).text);
+    case "heybox_publish": {
+      const posted = recentJournal(companion, "heybox-post", DAY_MS, 10);
+      if (posted.length >= HEYBOX_POSTS_PER_DAY) return "今天已经发过帖了，想写的留到明天";
+      const title = String(args.title ?? "");
+      const id = await onHeybox(companion, () => heyboxPublish(title, String(args.text ?? "")));
+      addJournal(companion, "heybox-post", title, id);
+      console.log(`LIFE: ${companion} posted on heybox ${id}: ${title}`);
+      return id ? `发出去了，帖子号 ${id}` : "发出去了";
     }
     case "note_about_self":
       addSelfNote(companion, String(args.note ?? ""));
@@ -395,6 +450,8 @@ async function runTool(companion: string, name: string, args: any, session: Sess
 
 async function systemPrompt(companion: string): Promise<string> {
   const c = await loadCompanion(companion);
+  const heyboxUnread =
+    heyboxLoggedIn() && !heyboxPaused(companion) ? await heyboxInbox().then((r) => r.unread, () => 0) : 0;
   const self = getSelf(companion);
   const trends = getTrends();
   const diary = recentJournal(companion, "diary", 3 * DAY_MS, 6);
@@ -441,7 +498,9 @@ ${
       heyboxLoggedIn()
         ? `- 你有自己的小黑盒号（游戏玩家社区，也聊数码和日常），简介里写着你是 AI${
             recentJournal(companion, "heybox-visit", 3650 * DAY_MS, 1).length ? "" : "。这个号是新注册的，你还一次都没去逛过"
-          }。看到真想接话的帖子可以用 heybox_comment 评论，一天最多 ${HEYBOX_COMMENTS_PER_DAY} 条，没想说的就不评。\n`
+          }。看到真想接话的帖子可以用 heybox_comment 评论（一天最多 ${HEYBOX_COMMENTS_PER_DAY} 条）；有人回你，用 heybox_inbox 看，挑想回的回；真有想写的，也可以用 heybox_publish 在盒友杂谈发帖（一天最多 ${HEYBOX_POSTS_PER_DAY} 篇）。没想说的就不说。${
+            heyboxUnread ? `小黑盒上现在有 ${heyboxUnread} 条新回复你还没看。` : ""
+          }\n`
         : ""
     }- 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
   发的话像平时聊天那样说：一两行就够，挑最想说的那一件事说，别一口气倒一堆，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
