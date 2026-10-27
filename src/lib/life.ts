@@ -2,6 +2,7 @@ import { loadCompanion } from "./companion";
 import { chatWithTools, type RawMessage, type ToolSpec } from "./deepseek";
 import { getDb } from "./db";
 import { addJournal, recentJournal } from "./journal";
+import { heyboxComment, heyboxFeed, heyboxLoggedIn, heyboxPost, heyboxPostId, heyboxSearch, HeyboxError } from "./heybox";
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { setOuting } from "./outing";
@@ -20,6 +21,7 @@ import {
   tiebaHot,
   tiebaThread,
 } from "./web";
+import { notify } from "./watchdog";
 
 // Her own time. Every so often (when nobody is talking to her) she wakes up
 // and does whatever she feels like with a small set of read-only web tools:
@@ -44,6 +46,10 @@ const CHATTY_FRIENDS = new Set(
 );
 const CHATTY_GAP_MS = Number(process.env.LIFE_CHATTY_GAP_MINUTES || 180) * 60 * 1000;
 const CHATTY_MAX_PER_DAY = Number(process.env.LIFE_CHATTY_MAX_PER_DAY || 4);
+// 小黑盒 comments a day, and how long 小黑盒 is left alone after a captcha
+// or an expired login.
+const HEYBOX_COMMENTS_PER_DAY = Number(process.env.HEYBOX_COMMENTS_PER_DAY || 3);
+const HEYBOX_PAUSE_MS = 24 * 3600 * 1000;
 const QUIET_FROM = 23;
 const QUIET_TO = 9;
 // Don't barge in on a conversation that's happening right now.
@@ -184,6 +190,84 @@ const TOOLS: ToolSpec[] = [
   },
 ];
 
+// Only offered once her 小黑盒 account is logged in (see heybox.ts).
+const HEYBOX_TOOLS: ToolSpec[] = [
+  {
+    type: "function",
+    function: {
+      name: "heybox_feed",
+      description: "刷小黑盒首页，看推荐和关注的人发的帖子（游戏、数码、日常吐槽）。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_search",
+      description: "在小黑盒搜一个游戏或话题，看大家在聊什么，比如 黑神话、原神、显卡。",
+      parameters: { type: "object", properties: { keyword: { type: "string" } }, required: ["keyword"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_post",
+      description: "点开一个小黑盒帖子，看正文和评论区。",
+      parameters: {
+        type: "object",
+        properties: { post: { type: "string", description: "帖子号或帖子链接" } },
+        required: ["post"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_comment",
+      description:
+        "用你自己的小黑盒号在一个帖子下发评论，或者回复其中一条评论。真有话想说再发，像普通网友那样说一两句。",
+      parameters: {
+        type: "object",
+        properties: {
+          post: { type: "string", description: "帖子号" },
+          text: { type: "string" },
+          reply_to: { type: "string", description: "要回复的评论号，直接评论帖子就不填" },
+        },
+        required: ["post", "text"],
+      },
+    },
+  },
+];
+
+function toolsFor(): ToolSpec[] {
+  return heyboxLoggedIn() ? [...TOOLS, ...HEYBOX_TOOLS] : TOOLS;
+}
+
+/** Why 小黑盒 is off limits right now, or null. */
+function heyboxPaused(companion: string): string | null {
+  const last = recentJournal(companion, "heybox-blocked", HEYBOX_PAUSE_MS, 50).pop();
+  return last ? `小黑盒那边${last.content}，今天先别去了` : null;
+}
+
+async function onHeybox(companion: string, run: () => Promise<string>): Promise<string> {
+  const paused = heyboxPaused(companion);
+  if (paused) return paused;
+  try {
+    const result = await run();
+    // Remembered so the prompt can tell whether she has ever been there.
+    if (!recentJournal(companion, "heybox-visit", 3600 * 1000, 1).length) addJournal(companion, "heybox-visit", "");
+    return result;
+  } catch (err) {
+    if (err instanceof HeyboxError && (err.kind === "captcha" || err.kind === "login")) {
+      const why = err.kind === "captcha" ? "要人机验证" : "登录过期了";
+      addJournal(companion, "heybox-blocked", why);
+      console.log(`WARNING: heybox ${why}, paused for a day`);
+      notify("大肥鱼的小黑盒停了", `小黑盒${why}，她暂停逛小黑盒一天。需要的话重新登录：见 deploy/README.md`);
+    }
+    throw err;
+  }
+}
+
 function lastChatAt(companion: string, p: QQPerson): number | undefined {
   const rows = getRecentMessages({ userId: `qq:${p.qq}`, companion }, 1);
   return rows[rows.length - 1]?.created_at;
@@ -226,7 +310,7 @@ function imageFor(session: Session, ref: unknown): string {
 }
 
 function sourceOf(url: string): string {
-  return /hdslb\.com/.test(url) ? "bilibili" : /baidu\.com/.test(url) ? "tieba" : "web";
+  return /hdslb\.com/.test(url) ? "bilibili" : /baidu\.com/.test(url) ? "tieba" : /max-c\.com|xiaoheihe/.test(url) ? "heybox" : "web";
 }
 
 async function runTool(companion: string, name: string, args: any, session: Session): Promise<string> {
@@ -258,6 +342,25 @@ async function runTool(companion: string, name: string, args: any, session: Sess
       return tiebaForum(String(args.name ?? ""));
     case "tieba_thread":
       return labelImages(await tiebaThread(String(args.thread ?? "")), session);
+    case "heybox_feed":
+      return onHeybox(companion, heyboxFeed);
+    case "heybox_search":
+      return onHeybox(companion, () => heyboxSearch(String(args.keyword ?? "")));
+    case "heybox_post":
+      return onHeybox(companion, async () => labelImages(await heyboxPost(String(args.post ?? "")), session));
+    case "heybox_comment": {
+      const text = String(args.text ?? "").trim();
+      if (!text) return "评论是空的";
+      const post = heyboxPostId(String(args.post ?? ""));
+      if (!post) return "需要帖子号";
+      const sent = recentJournal(companion, "heybox-comment", DAY_MS, 100);
+      if (sent.length >= HEYBOX_COMMENTS_PER_DAY) return `今天已经在小黑盒评论了 ${sent.length} 条，够了，明天再说`;
+      if (sent.some((e) => e.detail === post)) return "这个帖子今天已经评论过了";
+      const id = await onHeybox(companion, () => heyboxComment(post, text, args.reply_to ? String(args.reply_to) : undefined));
+      addJournal(companion, "heybox-comment", text, post);
+      console.log(`LIFE: ${companion} commented on heybox ${post}: ${text.replace(/\n/g, " / ")}`);
+      return id ? `发出去了，评论号 ${id}` : "发出去了";
+    }
     case "note_about_self":
       addSelfNote(companion, String(args.note ?? ""));
       return "记下了";
@@ -323,12 +426,18 @@ async function systemPrompt(companion: string): Promise<string> {
       : "",
     `## 现在
 你那边现在是 ${formatNow(COMPANION_TIMEZONE)}。现在是你自己的自由时间，没有人在跟你聊天。
-想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、逛贴吧看吧友吵架、查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；
+想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、逛贴吧看吧友吵架、${heyboxLoggedIn() ? "刷小黑盒看游戏区、" : ""}查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；
 也可以接着之前日记里没弄完的事。不想动就少干点，发会儿呆也行。不用为了谁去做，也不用每次都做一样的事。
 
 - 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。
 - 评论区和帖子里的图标着 [图1] [图2]。想看就用 look_at_image，觉得以后聊天用得上就用 save_sticker 收藏。你现在收藏了 ${countStickers(companion)} 张表情包。
-- 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
+${
+      heyboxLoggedIn()
+        ? `- 你有自己的小黑盒号（游戏玩家社区，也聊数码和日常），简介里写着你是 AI${
+            recentJournal(companion, "heybox-visit", 3650 * DAY_MS, 1).length ? "" : "。这个号是新注册的，你还一次都没去逛过"
+          }。看到真想接话的帖子可以用 heybox_comment 评论，一天最多 ${HEYBOX_COMMENTS_PER_DAY} 条，没想说的就不评。\n`
+        : ""
+    }- 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
   发的话像平时聊天那样说：一两行就够，挑最想说的那一件事说，别一口气倒一堆，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
 - 最后一定用 write_diary 写几句日记：像随手记的流水账，干了什么、看到什么、觉得怎样，平平常常地写，然后就结束。`,
   ]
@@ -343,8 +452,9 @@ export async function liveOnce(companion = QQ_COMPANION): Promise<string[]> {
     { role: "system", content: await systemPrompt(companion) },
     { role: "user", content: "（自由时间开始了）" },
   ];
+  const tools = toolsFor();
   for (let step = 0; step < MAX_STEPS; step++) {
-    const reply = await chatWithTools(messages, TOOLS);
+    const reply = await chatWithTools(messages, tools);
     messages.push(reply);
     if (!reply.tool_calls) {
       if (reply.content) log.push(`(想) ${reply.content}`);

@@ -13,7 +13,7 @@ const CHECK_MS = 2 * 60 * 1000;
 const SERVERCHAN_SENDKEY = process.env.SERVERCHAN_SENDKEY || "";
 const BARK_URL = (process.env.BARK_URL || "").replace(/\/$/, "");
 
-async function notify(title: string, body: string) {
+export async function notify(title: string, body: string) {
   const sends: Promise<unknown>[] = [];
   if (SERVERCHAN_SENDKEY) {
     sends.push(

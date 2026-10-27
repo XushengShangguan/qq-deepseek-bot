@@ -35,6 +35,11 @@ if ! swapon --show | grep -q /swapfile; then
   swapon /swapfile
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
+# Aliyun images set vm.swappiness=0 (99-apsara-sysctl.conf), so the swapfile
+# goes unused and a build froze the server three times instead of swapping.
+# This file sorts after theirs.
+echo 'vm.swappiness = 60' > /etc/sysctl.d/99-zz-companion.conf
+sysctl --system >/dev/null
 
 # Bots try root passwords on every public IP all day. Once a key works, allow
 # key logins only. sshd uses the first value it reads, and Ubuntu includes

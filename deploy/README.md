@@ -52,6 +52,19 @@ ssh -L 6099:127.0.0.1:6099 -L 3000:127.0.0.1:3000 root@服务器IP
 
 然后用 QQ 给小号发消息试试。
 
+## 5. 小黑盒（可选）
+
+她用自己的小黑盒号逛帖子、偶尔评论（每天最多 `HEYBOX_COMMENTS_PER_DAY` 条）。先注册一个小号，**简介里写明是 AI**。然后在 Mac 上：
+
+```bash
+npm i --no-save playwright && npx playwright install chromium
+node deploy/heybox-login.mjs data/heybox.json      # 弹出二维码，用她的号扫
+scp data/heybox.json root@服务器IP:/opt/companion/data/heybox.json
+rm data/heybox.json
+```
+
+不用重启，下次自由时间就会用上。碰到人机验证或登录过期，她会停一天并推送提醒；过期了就重新扫一次。
+
 ## 以后改代码 / 改人设
 
 - **只改人设或风格文件**（`companions/` 里的 `.txt`）：
