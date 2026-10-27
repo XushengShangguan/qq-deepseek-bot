@@ -49,3 +49,8 @@ yarn.lock
 /napcat/data/
 /napcat/.env
 /deploy/.env
+
+# Who her friends are (names of real people); loaded by companion.ts
+/companions/*.private.txt
+# Old planning notes
+/PLAN.md

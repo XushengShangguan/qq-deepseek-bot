@@ -33,11 +33,14 @@ export async function loadCompanion(name: string): Promise<Companion> {
   );
   const [preamble, rest = ""] = data.split("###ENDPREAMBLE###");
   const [seedChat, backstory = ""] = rest.split("###ENDSEEDCHAT###");
+  // Who her friends are names real people, so it lives in <name>.private.txt,
+  // which git ignores; it goes in front of the rest of the backstory.
+  const friends = await fs.readFile(path.join("companions", `${name}.private.txt`), "utf8").catch(() => "");
   const companion = {
     name,
     preamble: preamble.trim(),
     seedChat: seedChat.trim(),
-    backstory: backstory.trim(),
+    backstory: [friends.trim(), backstory.trim()].filter(Boolean).join("\n"),
   };
   cache.set(name, companion);
   return companion;
