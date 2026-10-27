@@ -290,8 +290,12 @@ function messageBlocked(companion: string, p: QQPerson): string | null {
   return null;
 }
 
-/** Images seen during one free-time session, by the label she sees ("图3"). */
-type Session = { images: Map<string, string> };
+/**
+ * One free-time session: images seen, by the label she sees ("图3"), and,
+ * when a friend sent her off browsing in chat, who she said she'd come back
+ * and tell. That one report doesn't count against the daily message limits.
+ */
+type Session = { images: Map<string, string>; promisedTo?: string };
 
 /** Replace "[图片 <url>]" in a tool result with "[图N]" labels she can refer to. */
 function labelImages(text: string, session: Session): string {
@@ -369,7 +373,8 @@ async function runTool(companion: string, name: string, args: any, session: Sess
       if (!p) return `没有叫"${args.name}"的朋友。你认识的：${qqPeople().map((x) => x.name).join("、")}`;
       const text = String(args.text ?? "").trim();
       if (!text) return "消息是空的";
-      const blocked = messageBlocked(companion, p);
+      const promised = session.promisedTo === p.qq;
+      const blocked = promised ? null : messageBlocked(companion, p);
       if (blocked) return `没发出去：${blocked}`;
       // Bot account kicked offline: don't let her think it went through.
       if (!(await isOnline())) return "没发出去：QQ 现在连不上，消息发不出去";
@@ -377,6 +382,7 @@ async function runTool(companion: string, name: string, args: any, session: Sess
       saveMessage({ userId: `qq:${p.qq}`, companion }, "assistant", text);
       addJournal(companion, "message", text, p.qq);
       await sendInPieces(p.qq, text);
+      if (promised) session.promisedTo = undefined;
       console.log(`LIFE: ${companion} messaged ${p.name}: ${text.replace(/\n/g, " / ")}`);
       return "发出去了";
     }
@@ -445,11 +451,19 @@ ${
     .join("\n\n");
 }
 
-export async function liveOnce(companion = QQ_COMPANION): Promise<string[]> {
+export async function liveOnce(companion = QQ_COMPANION, promisedTo?: string): Promise<string[]> {
   const log: string[] = [];
-  const session: Session = { images: new Map() };
+  const session: Session = { images: new Map(), promisedTo };
+  const promised = promisedTo ? qqPeople().find((p) => p.qq === promisedTo) : undefined;
   const messages: RawMessage[] = [
-    { role: "system", content: await systemPrompt(companion) },
+    {
+      role: "system",
+      content:
+        (await systemPrompt(companion)) +
+        (promised
+          ? `\n\n这一趟是你刚才跟${promised.name}聊天时说要去逛的，你答应了逛完回来跟${promised.name}说说看到了什么。`
+          : ""),
+    },
     { role: "user", content: "（自由时间开始了）" },
   ];
   const tools = toolsFor();
@@ -504,7 +518,7 @@ const state = globalThis as unknown as {
  * She said in chat she'd go and look for something ("[去逛]"): start a
  * free-time session shortly, outside the usual schedule. One at a time.
  */
-export function requestOuting(companion = QQ_COMPANION, delayMs = 60_000) {
+export function requestOuting(companion = QQ_COMPANION, promisedTo?: string, delayMs = 60_000) {
   if (!ENABLED || state.outingTimer || state.lifeRunning) return;
   console.log(`INFO: ${companion} is going out to browse in ${delayMs / 1000}s`);
   setOuting("pending");
@@ -514,7 +528,7 @@ export function requestOuting(companion = QQ_COMPANION, delayMs = 60_000) {
     state.lifeRunning = true;
     setOuting("running");
     try {
-      await liveOnce(companion);
+      await liveOnce(companion, promisedTo);
     } catch (err) {
       console.error("outing failed", err);
     } finally {

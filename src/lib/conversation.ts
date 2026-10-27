@@ -239,7 +239,7 @@ export function handleMessage(msg: IncomingMessage): Promise<Reply> {
     if (reply.includes("[去逛]")) {
       reply = reply.replace(OUTING_LINE, "").replace(/\n{2,}/g, "\n").trim() || "行 我去逛逛";
       // Imported here: life.ts depends on qq.ts, which depends on this file.
-      (await import("./life")).requestOuting(msg.companion);
+      (await import("./life")).requestOuting(msg.companion, msg.userId.match(/^qq:(\d+)$/)?.[1]);
     }
     if (drafts.length && !reply) reply = "整理好了 发你了";
     // She can see what she wrote when asked to change it.
