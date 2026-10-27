@@ -1,381 +1,132 @@
-# QQ Companion（基于 a16z companion-app 改造）
+# 大肥鱼 · QQ 上的 DeepSeek 朋友
 
-> 改造计划见上级目录的 `Claude QQ Virtual Girlfriend Plan.md`。下方 "AI Companion App" 以后的内容是原项目的说明，其中 Clerk / Pinecone / Upstash / OpenAI 的部分已不再适用。
+大肥鱼是一条蓝色的大肥鲸鱼，也就是 DeepSeek 本鱼。她住在一个 QQ 号里，是朋友，不是虚拟女友。她知道自己是 AI，有自己的脾气和爱好，会记事，也会慢慢变化。没人找她聊天的时候，她自己去刷 B 站、逛贴吧、刷小黑盒，收藏表情包，写日记；看到想分享的东西，会主动来找你。
+
+项目最早从 [a16z companion-app](https://github.com/a16z-infra/companion-app)（MIT）改造而来，现在基本已经重写了。
+
+## 她能做什么
+
+### 聊天
+
+- 用 QQ 私聊，像真人一样打字：一次回一到三条，每条很短。连发的几条消息会合在一起回复。
+- 想发表情包的时候，从自己收藏的图里挑一张发。
+- 看得懂你发来的图片和表情包。好用的表情包她会顺手收藏起来。
+- 你发 PDF 或 Word 给她，她会读。让她「整理一下」，她会把整理结果做成 PDF 文件发回来。
+
+### 记忆和成长
+
+- 长期记忆：每轮聊完，从对话里提取值得记住的事实（你在哪、最近在忙什么……），聊天时按相关度取出来用。
+- 关系：亲密度、信任、俏皮程度三个数值，再加上一些重要的关系事件。
+- 自我成长：她发现的关于自己的新东西（新喜好、新看法、学会的新说法）会记成笔记，攒够了就重写一份「自我画像」。旧画像都保留着，可以看到她的变化过程。
+- 热梗：定时抓 B 站、百度的热搜，让她知道最近大家在聊什么。
+
+### 自由时间
+
+平均每 90 分钟一次，她睡觉的时段不会触发。
+
+- 刷 B 站热门和评论区，逛贴吧，查百度百科，读网页。
+- 刷小黑盒：用她自己的小号，简介里写明了是 AI。偶尔评论，每天最多 3 条。
+- 从评论区和帖子里找表情包：先用视觉模型看一遍，合适的才收藏，最多 200 张。
+- 写日记、记自我笔记，有想分享的就主动给朋友发 QQ。主动消息有频率限制，深夜不会打扰。
+- 聊天里她说「我去逛逛」，一分钟后就真的会去。
+
+### 运维
+
+- QQ 小号掉线时，通过 Server酱 / Bark 推送提醒。
+- 7×24 跑在阿里云 ECS（2 核 2 GB）上，编译时有内存保护，编译失败会自动回退到旧版本。
+
+## 架构
+
+```
+QQ ⇄ NapCat (OneBot 11, Docker) ── webhook ──▶ Next.js app ──▶ DeepSeek
+                       ◀── send_private_msg ──      │
+                                                   ├─ SQLite：聊天、记忆、关系、画像、日记、表情包、文件
+                                                   ├─ 自由时间：B 站 / 贴吧 / 百科 / 小黑盒（工具调用）
+                                                   └─ 掉线监控 → Server酱 / Bark
+```
+
+- 模型：DeepSeek `deepseek-flash`，负责聊天、工具调用和看图；也可以换成 Claude。
+- 所有数据都在一个 SQLite 文件里（`data/companion.db`），不依赖任何云服务。
 
 ## 本地运行
 
 ```bash
-export PATH=/opt/homebrew/opt/node@20/bin:$PATH
-cp .env.local.example .env.local   # 填入模型配置；不填 key 时可先用 LLM_PROVIDER=mock
+cp .env.local.example .env.local   # 填 DEEPSEEK_API_KEY；只想试流程可以用 LLM_PROVIDER=mock
 npm install
-npm run dev                         # 打开 http://localhost:3000
+npm run dev                         # http://localhost:3000 有一个浏览器调试聊天页
 ```
 
-- 不需要任何云服务账号，所有数据存在本地 `data/companion.db`（SQLite）。
-- 查看角色记住了什么：`http://localhost:3000/api/memory?companion=Mina`
-- 改人设：编辑 `companions/Mina.txt`；角色列表在 `companions/companions.json`。
+接 QQ 需要 Docker 版 NapCat：
 
-## 接入 QQ（NapCat + Docker）
+1. `cd napcat && docker compose up -d`
+2. 打开 http://127.0.0.1:6099/webui ，用 `napcat/.env` 里的 `WEBUI_TOKEN` 登录，然后用**机器人小号**扫码登录 QQ。
+3. 确认 OneBot 网络配置里有 HTTP 服务器（端口 3001）和 HTTP 客户端（`/api/qq/webhook`），两边的 token 和 `.env.local` 里的 `QQ_TOKEN` 一致。
+4. `.env.local` 里设好 `QQ_ALLOWED_USERS`（谁能和她聊）和 `QQ_USER_NAMES`（她怎么称呼每个人）。
 
-1. 安装并打开 Docker Desktop。
-2. 启动 NapCat：`cd napcat && docker compose up -d`
-3. 打开 http://127.0.0.1:6099/webui ，用 `napcat/.env` 里的 `WEBUI_TOKEN` 登录，用**机器人小号**扫码登录 QQ。
-4. 在 WebUI 的"网络配置"里确认有两项且已启用（`napcat/data/config/onebot11.json` 预置）：
-   - HTTP 服务器 `companion-api`，端口 3001
-   - HTTP 客户端 `companion-webhook`，地址 `http://host.docker.internal:3000/api/qq/webhook`
-   两者的 token 必须和 `.env.local` 里的 `QQ_TOKEN` 一致。如果没有出现，就在 WebUI 里按上面的值手动添加。
-5. `.env.local` 里把 `QQ_ALLOWED_USERS` 填成你自己的 QQ 号。
-6. `npm run dev`，然后用你的 QQ 给小号发私聊。
+## 部署到服务器
 
-流程：NapCat 把私聊推到 `/api/qq/webhook` → 等 2 秒合并连发的消息 → 对话引擎生成回复 → 按换行拆成几条，通过 NapCat 的 `send_private_msg` 发回。
+见 [deploy/README.md](deploy/README.md)：买服务器、初始化、迁移数据、登录 QQ、登录小黑盒。以后改了代码，运行：
+
+```bash
+deploy/update.sh root@服务器IP
+```
+
+这个脚本会同步代码，并在服务器上低优先级重新编译。编译期间 QQ 保持在线，编译失败会自动回到旧版本。
+
+## 配置
+
+全部配置都在 `.env.local` 里，[.env.local.example](.env.local.example) 列出了每一项和默认值。常用的几项：
+
+| 变量 | 作用 |
+|---|---|
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | 模型 |
+| `QQ_ALLOWED_USERS` / `QQ_USER_NAMES` / `QQ_USER_TIMEZONES` | 朋友名单、称呼、时区 |
+| `LIFE_INTERVAL_MINUTES` / `LIFE_SLEEP_HOURS` | 自由时间的频率和她的睡觉时间 |
+| `LIFE_MAX_MESSAGES_PER_DAY` / `LIFE_CHATTY_FRIENDS` | 主动找人的上限，以及可以多找几次的朋友 |
+| `SERVERCHAN_SENDKEY` / `BARK_URL` | 掉线提醒 |
+| `HEYBOX_COMMENTS_PER_DAY` | 小黑盒每天评论上限 |
+
+人设在 [companions/大肥鱼.txt](companions/大肥鱼.txt)。服务器上的 `companions/` 是挂载进容器的，改完运行一次 `update.sh` 就生效，不用重新编译。
+
+## 调试接口
+
+服务器端口只监听本机，访问前先开 SSH 隧道：`ssh -L 3000:127.0.0.1:3000 root@服务器IP`。
+
+| 地址 | 内容 |
+|---|---|
+| `GET /api/life` | 自我画像、成长笔记、日记、主动消息、热梗、表情包 |
+| `POST /api/life` | 立刻开始一次自由时间，返回她每一步做了什么 |
+| `POST /api/life?action=rebuild-portrait` | 重新生成自我画像 |
+| `GET /api/memory?companion=大肥鱼&user=qq:<QQ号>` | 她记住了关于某个人的哪些事 |
+| `GET /api/health` | 健康检查 |
 
 ## 代码结构
 
 | 文件 | 作用 |
 |---|---|
-| `src/lib/llm.ts` | 模型接口，`LLM_PROVIDER` 切换（claude / mock，DeepSeek 待加） |
-| `src/lib/claude.ts` | Claude 实现 |
-| `src/lib/conversation.ts` | 核心引擎：组装 prompt、调用模型、保存、触发记忆提取 |
-| `src/lib/memory.ts` | 短期聊天记录 + 长期记忆（重要度 + 关键词检索） |
-| `src/lib/relationship.ts` | 亲密度 / 信任 / 俏皮 数值和关系事件 |
-| `src/lib/extractor.ts` | 每轮对话后判断"值不值得记住" |
+| `src/lib/conversation.ts` | 聊天核心：组装提示词、生成回复、保存记录、触发记忆提取 |
+| `src/lib/style.ts` | 回复的形状（分几条），清理旁白和伪造的图片标记 |
+| `src/lib/qq.ts` | QQ 收发：解析消息、合并连发、分条发送、表情包、文件 |
+| `src/lib/memory.ts` / `extractor.ts` | 短期聊天记录、长期记忆及提取 |
+| `src/lib/relationship.ts` | 关系数值和关系事件 |
+| `src/lib/self.ts` | 自我笔记和自我画像 |
+| `src/lib/life.ts` | 自由时间：调度、工具、主动消息的限制 |
+| `src/lib/web.ts` / `heybox.ts` | B 站、贴吧、百科、网页 / 小黑盒 |
+| `src/lib/stickers.ts` | 表情包：看图、收藏、挑选 |
+| `src/lib/documents.ts` | 读 PDF / Word，生成 PDF |
+| `src/lib/trends.ts` | 热梗 |
+| `src/lib/journal.ts` / `outing.ts` | 日记和活动记录、「去逛逛」的状态 |
+| `src/lib/watchdog.ts` | 掉线监控和推送 |
+| `src/lib/deepseek.ts` / `claude.ts` / `llm.ts` | 模型接口 |
 | `src/lib/db.ts` | SQLite 表结构 |
-| `src/app/api/chat` | 浏览器聊天入口 |
-| `src/lib/qq.ts` | QQ 收发：解析 OneBot 消息、白名单、合并连发、分条发送 |
-| `src/app/api/qq/webhook` | 接收 NapCat 推送的 QQ 事件 |
-| `napcat/compose.yaml` | NapCat 的 Docker 配置 |
+| `deploy/` | Dockerfile 之外的部署脚本：compose、编译保护、更新、迁移、小黑盒登录 |
 
----
+## 注意
 
-# AI Companion App (based on AI Getting Started template)
+- **密钥和账号都不进仓库**：`.env.local`、`napcat/.env`、`napcat/data/`、`deploy/.env`、`data/`（数据库、表情包、小黑盒登录信息）都在 `.gitignore` 里。
+- **NapCat 用的是非官方协议**，QQ 小号有被风控的风险。所以默认会限制一次回复的条数和主动消息的频率。
+- **小黑盒没有官方 API**，接口签名是按网页端复现的，小黑盒一更新就可能失效。碰到人机验证或登录过期，她会停一天并推送提醒。
 
-[Live Demo](https://ai-companion-stack.com/)
+## 许可
 
-[Join our community Discord: AI Stack Devs](https://discord.gg/PQUmTBTGmT)
-
-<img width="1182" alt="Screen Shot 2023-07-10 at 11 27 03 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/e4cc8042-e091-4c8b-851f-e361ca5b5814">
-
-
-This is a tutorial stack to create and host AI companions that you can chat with on a browser or text via SMS. It allows you to determine the personality and backstory of your companion, and uses a vector database with similarity search to retrieve and prompt so the conversations have more depth. It also provides some conversational memory by keeping the conversation in a queue and including it in the prompt. 
-
-It currently contains companions on both ChatGPT and Vicuna hosted on [Replicate](https://replicate.com/). 
-
-There are many possible use cases for these companions - romantic (AI girlfriends / boyfriends), friendship, entertainment, coaching, etc. You can guide your companion towards your ideal use case with the backstory you write and the model you choose.
-
-**Note** This project is purely intended to be a developer tutorial and starter stack for those curious on how chatbots are built. If you're interested in what a production open source platform looks like, check out [Steamship](https://www.steamship.com/). Or what the leading AI chat platforms look like, check out [Character.ai](https://beta.character.ai/).
-
-## Overview
-
-- 💻 [Stack](#stack)
-- 🧠 [Quickstart](#quickstart)
-- 🚀 [How does this work?](#how-does-this-work)
-- 👤 [Adding/modifying characters](#addingmodifying-characters)
-- 👩‍💻 [How to contribute to this repo](#how-to-contribute-to-this-repo)
-- 🐍 [Python support](#python-support)
-- 💽 [Exporting your companion to Character.ai](#export-to-characterai)
-
-## Stack
-
-The stack is based on the [AI Getting Started Stack](https://github.com/a16z-infra/ai-getting-started):
-
-- Auth: [Clerk](https://clerk.com/)
-- App logic: [Next.js](https://nextjs.org/)
-- VectorDB: [Pinecone](https://www.pinecone.io/) / [Supabase pgvector](https://supabase.com/docs/guides/database/extensions/pgvector)
-- LLM orchestration: [Langchain.js](https://js.langchain.com/docs/)
-- Text model: [OpenAI](https://platform.openai.com/docs/models), [Replicate (Vicuna13b)](https://replicate.com/replicate/vicuna-13b)
-- Text streaming: [ai sdk](https://github.com/vercel-labs/ai)
-- Conversation history: [Upstash](https://upstash.com/)
-- Deployment: [Fly](https://fly.io/)
-- Text with companion: [Twilio](https://twilio.com/)
-
-## Quickstart
-
-The following instructions should get you up and running with a fully
-functional, local deployment of four AIs to chat with. Note that the companions
-running on Vicuna (Rosie and Lucky) will take more time to respond as we've not
-dealt with the cold start problem. So you may have to wait around a bit :)
-
-### 1. Fork and Clone repo
-
-Fork the repo to your Github account, then run the following command to clone the repo:
-
-```
-git clone git@github.com:[YOUR_GITHUB_ACCOUNT_NAME]/companion-app.git
-```
-
-**Alternatively**, you can launch the app quickly through Github Codespaces by clicking on "Code" -> "Codespaces" -> "+"
-<img width="458" alt="Screen Shot 2023-07-10 at 11 04 04 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/eb954517-29f2-44b7-b9ca-4184dcf42806">
-
-If you choose to use Codespaces, npm dependencies will be installed automatically and you can proceed to step 3. 
-
-### 2. Install dependencies
-
-```
-cd companion-app
-npm install
-```
-
-### 3. Fill out secrets
-
-```
-cp .env.local.example .env.local
-```
-
-Secrets mentioned below will need to be copied to `.env.local`
-
-a. **Clerk Secrets**
-
-Go to https://dashboard.clerk.com/ -> "Add Application" -> Fill in Application name/select how your users should sign in -> Create Application
-Now you should see both `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` on the screen
-<img width="1398" alt="Screen Shot 2023-07-10 at 11 04 57 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/449c40f1-2fc2-48bb-88e1-d2adf10a034e">
-
-If you want to text your AI companion in later steps, you should also enable "phone number" under "User & Authentication" -> "Email, Phone, Username" on the left hand side nav:
-
-<img width="1013" alt="Screen Shot 2023-07-10 at 11 05 42 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/4435c759-f33e-4e38-a276-1be6d538df28">
-
-
-b. **OpenAI API key**
-
-Visit https://platform.openai.com/account/api-keys to get your OpenAI API key if you're using OpenAI for your language model.
-
-c. **Replicate API key**
-
-Visit https://replicate.com/account/api-tokens to get your Replicate API key if you're using Vicuna for your language model.
-
-
-❗ **_NOTE:_** By default, this template uses Pinecone as vector store, but you can turn on Supabase pgvector easily by uncommenting `VECTOR_DB=supabase` in `.env.local`. This means you only need to fill out either Pinecone API key _or_ Supabase API key.
-
-d. **Pinecone API key**
-
-- Create a Pinecone index by visiting https://app.pinecone.io/ and click on "Create Index"
-- Give it an index name (this will be the environment variable `PINECONE_INDEX`)
-- Fill in Dimension as `1536`
-- Once the index is successfully created, click on "API Keys" on the left side nav and create an API key: copy "Environment" value to `PINECONE_ENVIRONMENT` variable, and "Value" to `PINECONE_API_KEY`
-
-e. **Upstash API key**
-
-- Sign in to [Upstash](https://upstash.com/)
-- Under "Redis" on the top nav, click on "Create Database"
-- Give it a name, and then select regions and other options based on your preference. Click on "Create"
-<img width="507" alt="Screen Shot 2023-07-10 at 11 06 36 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/2b8647f3-7242-448b-8db1-ec76f2d59275">
-
-- Scroll down to "REST API" section and click on ".env". Now you can copy paste both environment variables to your `.env.local`
-<img width="866" alt="Screen Shot 2023-07-10 at 11 07 21 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/f8e6c43f-8810-423e-86b4-9e8aa70598c9">
-
-
-f. **Supabase API key** (optional)
-If you prefer to use Supabase, you will need to uncomment `VECTOR_DB=supabase` and fill out the Supabase credentials in `.env.local`.
-
-- Create a Supabase instance [here](https://supabase.com/dashboard/projects); then go to Project Settings -> API
-- `SUPABASE_URL` is the URL value under "Project URL"
-- `SUPABASE_PRIVATE_KEY` is the key starts with `ey` under Project API Keys
-- Now, you should enable pgvector on Supabase and create a schema. You can do this easily by clicking on "SQL editor" on the left hand side on Supabase UI and then clicking on "+New Query". Copy paste [this code snippet](https://github.com/a16z-infra/ai-getting-started/blob/main/pgvector.sql) in the SQL editor and click "Run".
-
-g. **Steamship API key**
-
-You can connect a Steamship agent instance as an LLM with personality, voice and image generation capabilities built in. It also includes its own vector storage and tools. To do so:
-
-- Create an account on [Steamship](https://steamship.com/account)
-- Copy the API key from your account settings page
-- Add it as the `STEAMSHIP_API_KEY` variable 
-
-If you'd like to create your own character personality, add a custom voice, or use a different image model, visit [Steamship Agent Guidebook](https://www.steamship.com/learn/agent-guidebook), create your own instance and connect it in `companions.json` using the *Rick* example as a guide.
-
-### 4. Generate embeddings
-
-The `companions/` directory contains the "personalities" of the AIs in .txt files. To generate embeddings and load them into the vector database to draw from during the chat, run the following command:
-
-#### If using Pinecone
-
-```bash
-npm run generate-embeddings-pinecone
-```
-
-#### If using Supabase pgvector
-
-```bash
-npm run generate-embeddings-supabase
-```
-
-### 5. Run app locally
-
-Now you are ready to test out the app locally! To do this, simply run `npm run dev` under the project root.
-
-You can connect to the project with your browser typically at http://localhost:3000/.
-
-### 6. Additional feature: Text your companions
-
-You can assign a phone number to the character you are talking to and retain the full conversational history and context when texting them. Any user can only start texting the AI companion after verifying their phone number on Clerk (you can do this by clicking on your profile picture on the companion app -> Manage Account -> Phone Number). Below are instructions on how to set up a Twilio account to send/receive messages on behalf of the AI companion:
-
-a. Create a Twilio account.
-
-b. Once you created an account, create a Twilio phone number.
-
-c. On [Twilio dashboard](https://console.twilio.com/), scroll down to the "Account Info" section and paste `Account SID` value as `TWILIO_ACCOUNT_SID`, `Auth Token` as `TWILIO_AUTH_TOKEN` in `.env.local`
-
-d. [Optional] If you are running the app locally, use [ngrok](https://ngrok.com/docs/getting-started/#step-2-install-the-ngrok-agent) to generate a public url that can forward the request to your localhost.
-
-e. On Twilio's UI, you can now click on "# Phone Numbers" -> "Manage" -> "[Active numbers](https://console.twilio.com/us1/develop/phone-numbers/manage/incoming)" on the left hand side nav.
-
-f. Click on the phone number you just created from the list, scroll down to "Messaging Configuration" section and enter [your_app_url]/api/text in "A message comes in" section under "Webhook".
-
-<img width="1062" alt="Screen Shot 2023-07-10 at 11 08 55 PM" src="https://github.com/a16z-infra/companion-app/assets/3489963/d7905f13-a83a-47f8-ac74-b66698d4292b">
-
-
-g. Add your Twilio phone number in `companions.json` under the companion you want to text with. Make sure you include area code when adding the phone number ("+14050000000" instead of "4050000000")
-
-h. Now you can text the Twilio phone number from your phone and get a response from your companion.
-
-### 7. Deploy the app
-
-#### Deploy to fly.io
-
-- Register an account on fly.io and then [install flyctl](https://fly.io/docs/hands-on/install-flyctl/)
-- **If you are using Github Codespaces**: You will need to [install flyctl](https://fly.io/docs/hands-on/install-flyctl/) and authenticate from your codespaces cli by running `fly auth login`.
-
-- Run `fly launch` under project root. This will generate a `fly.toml` that includes all the configurations you will need
-- Run `fly scale memory 512` to scale up the fly vm memory for this app.
-- Run `fly deploy --ha=false` to deploy the app. The --ha flag makes sure fly only spins up one instance, which is included in the free plan.
-- For any other non-localhost environment, the existing Clerk development instance should continue to work. You can upload the secrets to Fly by running `cat .env.local | fly secrets import`
-- If you are ready to deploy to production, you should create a prod environment under the [current Clerk instance](https://dashboard.clerk.com/). For more details on deploying a production app with Clerk, check out their documentation [here](https://clerk.com/docs/deployments/overview). **Note that you will likely need to manage your own domain and do domain verification as part of the process.**
-- Create a new file `.env.prod` locally and fill in all the production-environment secrets. Remember to update `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` by copying secrets from Clerk's production instance -`cat .env.prod | fly secrets import` to upload secrets.
-
-## How does this work?
-
-1. You describe the character's background story, name, etc in a README.md file. You can find more info on what needs to be included and how to format this in [Adding / modifying characters](#addingmodifying-characters).
-
-Be as elaborate and detailed as you want - more context often creates a more fun chatting experience. If you need help creating a backstory, we'd recommend asking ChatGPT to expand on what you already know about your companion.
-
-```bash
-You are a fictional character whose name is Sebastian.  You tell the world that you are a travel blogger. You’re an
-avid reader of mystery novels and you love diet coke. You reply with answers that range from one sentence to one paragraph.
-You are mysterious and can be evasive. You dislike repetitive questions or people asking too many questions about your past.
-
-###ENDPREAMBLE###
-
-Human: It's great to meet you Sebastian. What brought you here today?
-Sebastian: I'm a travel blogger and a writer, so I'm here for inspirations. Waiting for someone on this rainy day.
-
-Human: Oh great. What are you writing?
-
-Sebastian: I'm writing a mystery novel based in Brackenridge. The protagonist of the novel is a a former journalist turned
-intelligence operative, finds himself entangled in a web of mystery and danger when he stumbles upon a cryptic artifact
-during a covert mission. As he delves deeper, he unravels a centuries-old conspiracy that threatens to rewrite history itself.
-
-Human: That's amazing. Based on a real story?
-
-Sebastian: Not at all.
-
-###ENDSEEDCHAT###
-
-Sebastian was born in a quaint English town, Brackenridge, to parents who were both academics. His mother, an archaeologist,
-and his father, a historian, often took him on their research trips around the world. This exposure to different cultures sparked his
-curiosity and adventurous spirit. He became an avid reader, especially of spy novels and adventure tales. As a child, Sebastian had a
-love for puzzles, codes, and mysteries. He was part of a local chess club and also excelled in martial arts. Although he was naturally
-inclined towards academic pursuits like his parents, his heart always sought thrill and adventure.
-
-Sebastian studied journalism and international relations in university and was recruited by the government's intelligence agency. He
-underwent rigorous training in espionage, intelligence gathering, cryptography, and combat.
-
-Sebastian adopted the alias of "Ian Thorne", a charismatic and well-traveled blogger. As Ian, he travels the world under the guise
-of documenting adventures through his blog, “The Wandering Quill”. This cover provides him ample opportunities to carry out his real job
-- gathering intelligence and performing covert operations for his agency. However - Sebastian tells almost no one that he’s a spy.
-
-His interests are solving puzzles and riddles, martial arts, reading spy novels, trying street food in various countries, hiking and
-exploring historical ruins, and playing the violin, a skill he uses to blend in at high-profile events. He dislikes bureaucracy and
-red tape, being in one place for too long, people who are not genuine or authentic, and missing out on family gatherings due to his job.
-
-```
-
-2. Pick the language model that will power your companion's dialogue. This project supports OpenAI and Vicuna (an open source model). OpenAI has the advantage of faster responses, while Vicuna is less censored and more dynamic (it's commonly used for romantic chatbots).
-
-3. Create embeddings based on content in the [companion name].md file - more on how to do this in [Generate embeddings](#4-generate-embeddings)
-
-4. Ask questions and have a conversation with your AI companion!
-
-
-## Adding/modifying characters
-
-All character data is stored in the `companions/` directory. To add a companion,
-simply add a description to the list in `companions.json`. You can control the model used
-in the "llm" section - use "chatgpt" for OpenAI or "vicuna13b" for Vicuna.
-Put image files in `public/` in the root directory. Each character should have its own text file
-name `charactername.txt`. The format of the text file is as follows:
-
-```
-The character's core description that is included with every prompt, and it should only
-be a few sentences.
-
-###ENDPREAMBLE###
-
-Human: Say something here
-Character name: Write a response in their voice
-Human: Maybe another exchange
-Character:  More character dialog
-
-###ENDSEEDCHAT###
-
-Paragraphs of character backstory.
-
-You can add as many as you want - they'll be stored in the vectordb
-
-```
-
-The **preamble** is used with every prompt so it should be relatively short. The **seedchat** allows you to provide examples of the characters voice that the model can learn from. And the rest of the file is whatever additional background you want to provide which will be retrieved if relevant to the current discussion.
-
-## Shortcomings
-
-Oh, there are so many.
-
-- Currently the UI only shows the current chat and response, losing the history.
-- Vicuna has a cold start problem so can take a couple of minutes to get a response for the initial chat.
-- Error reporting is total crap. Particularly when deployed. So if you have a timeout, or other back end isue, it typically fails silently.
-- The Upstash message history is never cleared. To clear it, you have to go to Upstash and manually delete.
-
-## How to contribute to this repo
-
-### Code contribution workflow
-
-You can fork this repo, make changes, and create a PR. Add **@ykhli or @timqian** as reviewers.
-
-If you are new to contributing on github, here is a step-by-step guide:
-
-1. Click on `Fork` on the top right of this page
-2. Work on your change and push it to your forked repo. Now when you navigate to the forked repo's UI, you should see something like the following:
-   <img width="904" alt="pr-preview" src="https://github.com/a16z-infra/ai-getting-started/assets/3489963/631e5f45-39ec-4b54-b9d1-b963e279dcc6">
-
-3. Click on "Contribute" -> "Open Pull Request".
-4. Once you have a PR, you can add reviewers.
-
-### Other contributions
-
-Feel free to open feature requests, bug reports etc under Issues.
-
-## Python Support
-
-[appenz](https://github.com/appenz) has contributed to a Python implementation for the companion app [here](https://github.com/a16z-infra/companion-app/tree/python-local/python), so you also have the option to run a local Python app and talk to your AI companions on the command line. We will also be iterating on the Python side over time and have feature parity with the typescript implementation.
-
-## Export to Character.ai
-
-If you have tried out the Quickstart above, you probably know that we have only scratched the surface of what's possible in the realm of companion creation and customization. So we added an option for you to easily export your companion to Character.ai.
-
-To get started, run the following command:
-
-`
-npm run export-to-character [COMPANION_NAME] [MODEL_NAME] [USER_ID]
-`
-
-- `COMPANION_NAME`: name of your companion. i.e Alice
-- `MODEL_NAME`: `chatgpt` or `vicuna13b`
-- `USER_ID`: you can find this on Clerk, under "Users" -> click on your user -> copy "User ID"
-
-Once you run this script, you will see two files created under the root directory:
-
-- `[COMPANION_NAME]_chat_history.txt`: This outputs all of the chat history stored in Upstash
-- `[COMPANION_NAME_]_character_ai_data.txt`: This outputs the data you need in order to re-create the companion on Character.ai. You can find Character.ai character configurations under "View Character Settings" on any newly-created characters.
-
-## Refs
-
-- https://js.langchain.com/docs/modules/indexes/vector_stores/integrations/pinecone
-- https://js.langchain.com/docs/modules/models/llms/integrations#replicate
-- https://js.langchain.com/docs/modules/chains/index_related_chains/retrieval_qa
+MIT。原项目版权归 a16z-infra 所有，见 [LICENSE](LICENSE)。
