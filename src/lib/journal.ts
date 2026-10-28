@@ -39,3 +39,26 @@ export function recentDiary(companion: string): string[] {
     return `${formatDate(e.created_at, COMPANION_TIMEZONE)}：${short}`;
   });
 }
+
+const HEYBOX_KINDS: Record<string, string> = {
+  "heybox-post": "在小黑盒发了帖",
+  "heybox-comment": "在小黑盒评论了一个帖子",
+  "heybox-reply": "在小黑盒回了别人",
+};
+
+/**
+ * Her 小黑盒 account and what she wrote there lately, for the chat prompt:
+ * she does it in her free time, and in chat she'd otherwise not know.
+ */
+export function recentHeybox(companion: string, loggedIn: boolean): string[] {
+  if (!loggedIn) return [];
+  const done = Object.keys(HEYBOX_KINDS)
+    .flatMap((kind) => recentJournal(companion, kind, 3 * DAY_MS, 5))
+    .sort((a, b) => a.created_at - b.created_at)
+    .slice(-5)
+    .map((e) => {
+      const text = e.content.replace(/\s+/g, " ");
+      return `${formatDate(e.created_at, COMPANION_TIMEZONE)}：${HEYBOX_KINDS[e.kind]}：「${text.length > 60 ? text.slice(0, 60) + "…" : text}」`;
+    });
+  return ["你有自己的小黑盒号，已经登录好了，自由时间会去刷、评论、发帖。", ...done];
+}

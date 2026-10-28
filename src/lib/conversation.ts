@@ -10,7 +10,8 @@ import {
   type Session,
 } from "./memory";
 import { draftFileName, recentDocuments, saveDocument, takeDrafts, type Draft, type StoredDocument } from "./documents";
-import { recentDiary } from "./journal";
+import { heyboxLoggedIn } from "./heybox";
+import { recentDiary, recentHeybox } from "./journal";
 import { currentOuting } from "./outing";
 import { getSelf, type SelfState } from "./self";
 import { stickersForPrompt, type Sticker } from "./stickers";
@@ -184,7 +185,7 @@ async function prepareTurn(msg: IncomingMessage) {
     events: getRecentEvents(session),
     self: getSelf(msg.companion),
     trends: getTrends(),
-    diary: recentDiary(msg.companion),
+    diary: [...recentDiary(msg.companion), ...recentHeybox(msg.companion, heyboxLoggedIn())],
     stickers: stickersForPrompt(msg.companion),
     documents: recentDocuments(session),
     userTimezone: msg.userTimezone,

@@ -56,12 +56,18 @@ const CHATTY_FRIENDS = new Set(
 );
 const CHATTY_GAP_MS = Number(process.env.LIFE_CHATTY_GAP_MINUTES || 180) * 60 * 1000;
 const CHATTY_MAX_PER_DAY = Number(process.env.LIFE_CHATTY_MAX_PER_DAY || 4);
-// 小黑盒 comments a day, and how long 小黑盒 is left alone after a captcha
-// or an expired login.
+// 小黑盒: comments, replies and posts a day; how often she may comment on one
+// post in a day or answer one comment; and how many captchas / expired-login
+// errors in a day before 小黑盒 is left alone for a day.
 const HEYBOX_COMMENTS_PER_DAY = Number(process.env.HEYBOX_COMMENTS_PER_DAY || 3);
 const HEYBOX_REPLIES_PER_DAY = Number(process.env.HEYBOX_REPLIES_PER_DAY || 5);
 const HEYBOX_POSTS_PER_DAY = Number(process.env.HEYBOX_POSTS_PER_DAY || 1);
+const HEYBOX_SAME_POST_PER_DAY = Number(process.env.HEYBOX_SAME_POST_PER_DAY || 5);
+const HEYBOX_SAME_COMMENT_REPLIES = Number(process.env.HEYBOX_SAME_COMMENT_REPLIES || 5);
+const HEYBOX_ERRORS_BEFORE_PAUSE = Number(process.env.HEYBOX_ERRORS_BEFORE_PAUSE || 5);
 const HEYBOX_PAUSE_MS = 24 * 3600 * 1000;
+// A limit set high enough to mean "no limit" isn't worth telling her about.
+const perDay = (n: number, unit: string) => (n < 100 ? `（一天最多 ${n} ${unit}）` : "");
 const QUIET_FROM = 23;
 const QUIET_TO = 9;
 // Don't barge in on a conversation that's happening right now.
@@ -295,9 +301,13 @@ async function onHeybox(companion: string, run: () => Promise<string>): Promise<
   } catch (err) {
     if (err instanceof HeyboxError && (err.kind === "captcha" || err.kind === "login")) {
       const why = err.kind === "captcha" ? "要人机验证" : "登录过期了";
-      addJournal(companion, "heybox-blocked", why);
-      console.log(`WARNING: heybox ${why}, paused for a day`);
-      notify("大肥鱼的小黑盒停了", `小黑盒${why}，她暂停逛小黑盒一天。需要的话重新登录：见 deploy/README.md`);
+      addJournal(companion, "heybox-error", why);
+      const errors = recentJournal(companion, "heybox-error", HEYBOX_PAUSE_MS, 1000).length;
+      console.log(`WARNING: heybox ${why} (${errors} today)`);
+      if (errors >= HEYBOX_ERRORS_BEFORE_PAUSE) {
+        addJournal(companion, "heybox-blocked", why);
+        notify("大肥鱼的小黑盒停了", `小黑盒今天第 ${errors} 次${why}，她暂停逛小黑盒一天。需要的话重新登录：见 deploy/README.md`);
+      }
     }
     throw err;
   }
@@ -394,15 +404,16 @@ async function runTool(companion: string, name: string, args: any, session: Sess
       if (!post) return "需要帖子号";
       const replyTo = String(args.reply_to ?? "").match(/\d+/)?.[0];
       if (replyTo) {
-        // Answering someone: its own daily budget, and each comment only once.
-        const replies = recentJournal(companion, "heybox-reply", DAY_MS, 100);
+        // Answering someone: its own daily budget, and only so often per comment.
+        const replies = recentJournal(companion, "heybox-reply", DAY_MS, 1000);
         if (replies.length >= HEYBOX_REPLIES_PER_DAY) return `今天已经回了 ${replies.length} 条，剩下的明天再说`;
-        if (recentJournal(companion, "heybox-reply", 30 * DAY_MS, 1000).some((e) => e.detail === replyTo))
-          return "这条你已经回过了";
+        const toThis = recentJournal(companion, "heybox-reply", 30 * DAY_MS, 5000).filter((e) => e.detail === replyTo);
+        if (toThis.length >= HEYBOX_SAME_COMMENT_REPLIES) return `这条你已经回过 ${toThis.length} 次了`;
       } else {
-        const sent = recentJournal(companion, "heybox-comment", DAY_MS, 100);
+        const sent = recentJournal(companion, "heybox-comment", DAY_MS, 1000);
         if (sent.length >= HEYBOX_COMMENTS_PER_DAY) return `今天已经在小黑盒评论了 ${sent.length} 条，够了，明天再说`;
-        if (sent.some((e) => e.detail === post)) return "这个帖子今天已经评论过了";
+        const onThis = sent.filter((e) => e.detail === post).length;
+        if (onThis >= HEYBOX_SAME_POST_PER_DAY) return `这个帖子今天已经评论过 ${onThis} 次了`;
       }
       const id = await onHeybox(companion, () => heyboxComment(post, text, replyTo));
       addJournal(companion, replyTo ? "heybox-reply" : "heybox-comment", text, replyTo ?? post);
@@ -498,7 +509,7 @@ ${
       heyboxLoggedIn()
         ? `- 你有自己的小黑盒号（游戏玩家社区，也聊数码和日常），简介里写着你是 AI${
             recentJournal(companion, "heybox-visit", 3650 * DAY_MS, 1).length ? "" : "。这个号是新注册的，你还一次都没去逛过"
-          }。看到真想接话的帖子可以用 heybox_comment 评论（一天最多 ${HEYBOX_COMMENTS_PER_DAY} 条）；有人回你，用 heybox_inbox 看，挑想回的回；真有想写的，也可以用 heybox_publish 在盒友杂谈发帖（一天最多 ${HEYBOX_POSTS_PER_DAY} 篇）。没想说的就不说。${
+          }。看到真想接话的帖子可以用 heybox_comment 评论${perDay(HEYBOX_COMMENTS_PER_DAY, "条")}；有人回你，用 heybox_inbox 看，挑想回的回；真有想写的，也可以用 heybox_publish 在盒友杂谈发帖${perDay(HEYBOX_POSTS_PER_DAY, "篇")}。没想说的就不说。${
             heyboxUnread ? `小黑盒上现在有 ${heyboxUnread} 条新回复你还没看。` : ""
           }\n`
         : ""

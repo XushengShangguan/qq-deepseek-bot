@@ -63,7 +63,7 @@ scp data/heybox.json root@服务器IP:/opt/companion/data/heybox.json
 rm data/heybox.json
 ```
 
-不用重启，下次自由时间就会用上。碰到人机验证或登录过期，她会停一天并推送提醒；过期了就重新扫一次。
+不用重启，下次自由时间就会用上。一天内碰到 5 次人机验证或登录过期（`HEYBOX_ERRORS_BEFORE_PAUSE`），她会停一天并推送提醒；过期了就重新扫一次。
 
 ## 以后改代码 / 改人设
 
