@@ -107,6 +107,17 @@ CREATE TABLE IF NOT EXISTS stickers (
   UNIQUE (companion, hash)
 );
 
+-- How each conversation went, beyond the chat window (recap.ts): messages up
+-- to upto_id are folded into text.
+CREATE TABLE IF NOT EXISTS chat_recaps (
+  user_id     TEXT    NOT NULL,
+  companion   TEXT    NOT NULL,
+  text        TEXT    NOT NULL,
+  upto_id     INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, companion)
+);
+
 -- 小黑盒 posts she wrote ahead and set a time for (life.ts).
 CREATE TABLE IF NOT EXISTS scheduled_posts (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

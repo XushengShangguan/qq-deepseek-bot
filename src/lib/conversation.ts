@@ -13,10 +13,11 @@ import { draftFileName, recentDocuments, saveDocument, takeDrafts, type Draft, t
 import { heyboxLoggedIn } from "./heybox";
 import { recentDiary, recentHeybox } from "./journal";
 import { describeScheduled } from "./plans";
+import { recapFor, updateRecap } from "./recap";
 import { currentOuting } from "./outing";
 import { getSelf, type SelfState } from "./self";
 import { stickersForPrompt, type Sticker } from "./stickers";
-import { stripStageDirections, turnStyleHints } from "./style";
+import { dropPromptEcho, stripStageDirections, turnStyleHints } from "./style";
 import { getTrends } from "./trends";
 import {
   COMPANION_TIMEZONE,
@@ -58,11 +59,12 @@ export function buildCompanionPrompt(args: {
   self?: SelfState;
   trends?: string;
   diary?: string[];
+  recap?: string; // how earlier talks with this person went
   stickers?: Sticker[];
   documents?: StoredDocument[];
   userTimezone?: string;
 }): string {
-  const { companion: c, userName, memories, relationship, events, self, trends, diary, stickers, documents } = args;
+  const { companion: c, userName, memories, relationship, events, self, trends, diary, recap, stickers, documents } = args;
   const userTz = args.userTimezone || DEFAULT_USER_TIMEZONE;
   const difference = describeDifference(userTz, COMPANION_TIMEZONE);
   const sections = [
@@ -90,6 +92,9 @@ export function buildCompanionPrompt(args: {
   sections.push(
     `## 你和${userName}现在的关系\n${describeRelationship(relationship)}`
   );
+  if (recap) {
+    sections.push(`## 你和${userName}之前聊过的（比下面的聊天记录更早）\n${recap}`);
+  }
   if (memories.length) {
     sections.push(
       `## 你记得的关于${userName}的事\n` +
@@ -120,7 +125,8 @@ ${stickers.map((s) => `- ${s.id}：${s.shows}｜${s.use_when}`).join("\n")}`
       : `## 你收藏的表情包\n还没有。你在自己的自由时间里逛 B 站、贴吧时才能找图收藏。`
   );
   sections.push(`## 怎么说话
-- 这是 QQ 私聊，每一行是一条单独的消息，纯文字，一条一般几个字到二十来个字。
+- 这是 QQ 私聊，每一行是一条单独的消息，纯文字，一条一般几个字到十几个字。像你在贴吧、小黑盒看到的网友那样打字：口语，能省就省，不打句号，语气词和梗随手用。
+- 网友聊天是在接话，不是在开导人：话说到就停，不用每次都抛个问题回去，不复述他刚说的，不讲道理、不总结人生、不打比方造金句——那些是 AI 味，你自己在帖子里也见过别人这么说。
 - 每句话都是对${userName}说的那句话本身：接他的话、回他的问题、说你自己真想说的。一句话换到别的场合也能原样说、删掉也不少什么，就不用说。
 - 他明确要你做的事（看图、评价、出主意、讲清楚一件事）就认真做，有看法直说；你也有不想做的权利，那得是你真不想。
 - 话要挂在具体的东西上：他说过的、你自己看到过的、眼前这条消息。没看到、打不开、不知道的，就说没看到、不知道。
@@ -191,6 +197,7 @@ async function prepareTurn(msg: IncomingMessage) {
       ...recentHeybox(msg.companion, heyboxLoggedIn()),
       ...(heyboxLoggedIn() ? describeScheduled(msg.companion).map((x) => `小黑盒定时帖，${x}`) : []),
     ],
+    recap: recapFor(session),
     stickers: stickersForPrompt(msg.companion),
     documents: recentDocuments(session),
     userTimezone: msg.userTimezone,
@@ -208,6 +215,7 @@ function finishTurn(session: Session, msg: IncomingMessage, reply: string) {
     userText: msg.text,
     assistantText: reply,
   }).catch((err) => console.error("memory extraction failed", err));
+  updateRecap(session, msg.userName).catch((err) => console.error("recap failed", err));
 }
 
 // QQ users often fire several messages in a row; handle one turn per session
@@ -241,7 +249,7 @@ export function handleMessage(msg: IncomingMessage): Promise<Reply> {
     // Room for a whole organized document; chat replies stay short anyway.
     const raw = await llm.generate(system, recentMessages, { purpose: "chat", maxTokens: 8000 });
     const { rest, drafts } = takeDrafts(raw);
-    let reply = stripStageDirections(rest);
+    let reply = stripStageDirections(dropPromptEcho(rest, system));
     if (reply.includes("[去逛]")) {
       reply = reply.replace(OUTING_LINE, "").replace(/\n{2,}/g, "\n").trim() || "行 我去逛逛";
       // Imported here: life.ts depends on qq.ts, which depends on this file.

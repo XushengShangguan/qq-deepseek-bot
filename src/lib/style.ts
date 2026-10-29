@@ -4,9 +4,9 @@
 type Shape = { weight: number; text: string };
 
 const SHAPES: Shape[] = [
-  { weight: 50, text: "这次只回 1 条，很短，几个字就行（比如一个反应、一句吐槽、一个\"嗯\"）" },
-  { weight: 35, text: "这次回 2 条" },
-  { weight: 15, text: "这次回 3 条" },
+  { weight: 65, text: "这次只回 1 条，很短，几个字就行（比如一个反应、一句吐槽、一个\"嗯\"）" },
+  { weight: 28, text: "这次回 2 条" },
+  { weight: 7, text: "这次回 3 条" },
 ];
 
 function pickShape(): string {
@@ -31,6 +31,26 @@ export function turnStyleHints(): string {
  * Remove roleplay stage directions like "（偷偷看着手机）" while keeping
  * kaomoji such as "(｡•̀ᴗ-)✧" (those contain no Chinese characters).
  */
+/**
+ * Drop lines copied out of her own prompt. Now and then the model reads a
+ * section back (once the whole "你最近刷到的" trend list, headings and all);
+ * those are never her words. A line counts as copied when, minus a list
+ * marker, it appears verbatim in the prompt and is a list item, a heading-like
+ * line ending in a colon, or 10 characters or longer.
+ */
+export function dropPromptEcho(reply: string, prompt: string): string {
+  return reply
+    .split("\n")
+    .filter((line) => {
+      const t = line.replace(/^\s*[-•*]\s*/, "").trim();
+      if (!t) return false;
+      const listItem = t !== line.trim();
+      if (listItem || /[：:]$/.test(t) || t.length >= 10) return !prompt.includes(t);
+      return true;
+    })
+    .join("\n");
+}
+
 export function stripStageDirections(text: string): string {
   return text
     // Echoed history timestamps like "[10月22日 周三 09:10]".
@@ -48,6 +68,8 @@ export function stripStageDirections(text: string): string {
         m.replace(/[（()）]/g, "").length <= 1 ? m : ""
       ).trim()
     )
+    // Chat isn't prose: nobody ends a QQ message with a full stop.
+    .map((line) => line.replace(/。+$/, ""))
     .filter(Boolean)
     .join("\n");
 }

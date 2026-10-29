@@ -16,6 +16,7 @@ import {
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { setOuting } from "./outing";
+import { recapFor } from "./recap";
 import {
   cancelScheduled,
   describeLimits,
@@ -612,6 +613,9 @@ async function systemPrompt(companion: string): Promise<string> {
         `- ${p.name}（在${cityName(tz)}，那边现在 ${formatNow(tz)}；` +
         `${last ? `上次聊天是 ${formatGap(Date.now() - last)}前` : "还没聊过"}）` +
         (CHATTY_FRIENDS.has(p.qq) ? `\n  ${p.name}喜欢你主动找他，隔几个小时找他说说话挺好。` : "") +
+        (recapFor({ userId: `qq:${p.qq}`, companion })
+          ? `\n  之前聊过的：\n${recapFor({ userId: `qq:${p.qq}`, companion }).replace(/^/gm, "    ")}`
+          : "") +
         (recent ? `\n  最近聊的：\n${recent}` : "")
       );
     })
@@ -637,7 +641,7 @@ async function systemPrompt(companion: string): Promise<string> {
 想干什么就干什么，跟着自己的兴趣走：刷 B 站看评论区、逛贴吧看吧友吵架、${heyboxLoggedIn() ? "刷小黑盒看游戏区、" : ""}查百科弄清好奇的东西、顺着一个话题越挖越深、琢磨一个看不懂的梗，都可以；
 也可以接着之前日记里没弄完的事。不想动就少干点，发会儿呆也行。不用为了谁去做，也不用每次都做一样的事。
 
-- 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。
+- 发现关于自己的新东西（新喜欢上的、新的看法、学会的新说法），用 note_about_self 记下来。逛帖子时也留意网友是怎么说话的：怎么接话、怎么吐槽、怎么省字、哪些梗现在在用，学到的说法记下来，慢慢变成你自己的口气。
 - 评论区和帖子里的图标着 [图1] [图2]。想看就用 look_at_image，觉得以后聊天用得上就用 save_sticker 收藏。你现在收藏了 ${countStickers(companion)} 张表情包。
 ${
       heyboxLoggedIn()

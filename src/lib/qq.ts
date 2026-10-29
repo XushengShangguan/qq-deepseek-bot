@@ -46,8 +46,9 @@ export function qqPeople(): QQPerson[] {
 }
 
 // People often send several short messages in a row; wait this long for more
-// before replying, and answer them together.
-const DEBOUNCE_MS = Number(process.env.QQ_DEBOUNCE_MS || 1200);
+// before replying, and answer them together. Long enough that a burst gets one
+// answer, the way a person reads the lot before typing.
+const DEBOUNCE_MS = Number(process.env.QQ_DEBOUNCE_MS || 6000);
 
 type Segment = { type: string; data?: Record<string, any> };
 

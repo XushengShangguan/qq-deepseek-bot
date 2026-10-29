@@ -5,7 +5,8 @@ import type { ChatMessage } from "./llm";
 // Long-term memory  = rows of `memories`, retrieved by importance + simple
 // keyword/tag matching (no embeddings in the MVP; see plan §7).
 
-const RECENT_LIMIT = Number(process.env.RECENT_MESSAGES || 20);
+// Older messages live on in the recap (recap.ts).
+const RECENT_LIMIT = Number(process.env.RECENT_MESSAGES || 60);
 const MEMORY_LIMIT = 8;
 
 export type Session = { userId: string; companion: string };
