@@ -12,6 +12,7 @@ import {
 import { draftFileName, recentDocuments, saveDocument, takeDrafts, type Draft, type StoredDocument } from "./documents";
 import { heyboxLoggedIn } from "./heybox";
 import { recentDiary, recentHeybox } from "./journal";
+import { describeScheduled } from "./plans";
 import { currentOuting } from "./outing";
 import { getSelf, type SelfState } from "./self";
 import { stickersForPrompt, type Sticker } from "./stickers";
@@ -185,7 +186,11 @@ async function prepareTurn(msg: IncomingMessage) {
     events: getRecentEvents(session),
     self: getSelf(msg.companion),
     trends: getTrends(),
-    diary: [...recentDiary(msg.companion), ...recentHeybox(msg.companion, heyboxLoggedIn())],
+    diary: [
+      ...recentDiary(msg.companion),
+      ...recentHeybox(msg.companion, heyboxLoggedIn()),
+      ...(heyboxLoggedIn() ? describeScheduled(msg.companion).map((x) => `小黑盒定时帖，${x}`) : []),
+    ],
     stickers: stickersForPrompt(msg.companion),
     documents: recentDocuments(session),
     userTimezone: msg.userTimezone,

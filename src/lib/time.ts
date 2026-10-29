@@ -111,3 +111,40 @@ export function describeDifference(userTz: string, companionTz: string) {
   const hours = Number.isInteger(diff) ? `${Math.abs(diff)}` : Math.abs(diff).toFixed(1);
   return diff > 0 ? `比你那边快${hours}小时` : `比你那边慢${hours}小时`;
 }
+
+/**
+ * A moment she names in her own words, read in `tz`: "3小时后", "40分钟后",
+ * "21:00", "明天 9点半", "10-30 08:00", "2026-11-01 20:00". A bare time that
+ * has already passed today means tomorrow. Null if it can't be read.
+ */
+export function parseWhen(text: string, tz: string, now = Date.now()): number | null {
+  const s = text.trim();
+  const rel = s.match(/^(\d+(?:\.\d+)?)\s*(分钟|小时|天)后$/);
+  if (rel) return now + Number(rel[1]) * { 分钟: 60_000, 小时: 3_600_000, 天: 86_400_000 }[rel[2] as "分钟"];
+
+  const p = partsIn(now, tz);
+  // Minutes between this zone's wall clock and UTC, right now.
+  const offset = Date.UTC(p.y, p.m - 1, p.d, Number(p.hh), Number(p.mm)) - Math.floor(now / 60_000) * 60_000;
+  const t = s.match(/(\d{1,2})\s*(?:[:：]\s*(\d{2})|点\s*(半|(\d{1,2})\s*分?)?)\s*$/);
+  if (!t) return null;
+  const hh = Number(t[1]);
+  const mm = t[2] ? Number(t[2]) : t[3] === "半" ? 30 : t[4] ? Number(t[4]) : 0;
+  if (hh > 23 || mm > 59) return null;
+  const head = s.slice(0, t.index).trim();
+
+  let y = p.y, m = p.m, d = p.d;
+  const date = head.match(/(?:(\d{4})\s*[-/年]\s*)?(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?/);
+  if (date) {
+    y = date[1] ? Number(date[1]) : y;
+    m = Number(date[2]);
+    d = Number(date[3]);
+  } else if (/后天/.test(head)) d += 2;
+  else if (/明天|明早|明晚/.test(head)) d += 1;
+  else if (head && !/今天|今晚|今早|晚上|早上|下午|上午|中午/.test(head)) return null;
+
+  // "晚上8点" means 20:00.
+  const hour = /晚|下午/.test(head) && hh < 12 ? hh + 12 : hh;
+  let at = Date.UTC(y, m - 1, d, hour, mm) - offset;
+  if (!date && !head && at <= now) at += 86_400_000;
+  return at;
+}

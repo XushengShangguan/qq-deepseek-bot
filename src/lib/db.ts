@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS stickers (
   UNIQUE (companion, hash)
 );
 
+-- 小黑盒 posts she wrote ahead and set a time for (life.ts).
+CREATE TABLE IF NOT EXISTS scheduled_posts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  companion   TEXT    NOT NULL,
+  title       TEXT    NOT NULL,
+  text        TEXT    NOT NULL,
+  due_at      INTEGER NOT NULL,
+  state       TEXT    NOT NULL DEFAULT 'pending',  -- pending / sending / sent / failed / cancelled
+  result      TEXT,                                -- post id, or why it failed
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_posts
+  ON scheduled_posts (state, due_at);
+
 -- Files friends sent her (PDF / Word), as extracted text (documents.ts).
 CREATE TABLE IF NOT EXISTS documents (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

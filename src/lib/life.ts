@@ -16,9 +16,32 @@ import {
 import { getRecentMessages, saveMessage } from "./memory";
 import { isOnline, qqPeople, sendInPieces, QQ_COMPANION, type QQPerson } from "./qq";
 import { setOuting } from "./outing";
+import {
+  cancelScheduled,
+  describeLimits,
+  describeScheduled,
+  isLimitKind,
+  limitBlocks,
+  myHeybox,
+  replyTarget,
+  schedulePost,
+  scheduledOutcomes,
+  sendDuePosts,
+  setLimit,
+} from "./plans";
 import { addSelfNote, getSelf, maybeGrow } from "./self";
 import { countStickers, lookAtImage, saveSticker, stickersForPrompt } from "./stickers";
-import { COMPANION_TIMEZONE, DEFAULT_USER_TIMEZONE, cityName, formatDate, formatGap, formatNow, hourIn } from "./time";
+import {
+  COMPANION_TIMEZONE,
+  DEFAULT_USER_TIMEZONE,
+  cityName,
+  formatDate,
+  formatGap,
+  formatNow,
+  formatStamp,
+  hourIn,
+  parseWhen,
+} from "./time";
 import { getTrends } from "./trends";
 import {
   biliHotSearch,
@@ -208,6 +231,16 @@ const TOOLS: ToolSpec[] = [
   },
 ];
 
+/** Her scheduled posts, how recent ones went, and limits she set, as prompt lines. */
+function heyboxPlans(companion: string): string {
+  const lines = [
+    ...describeScheduled(companion).map((x) => `  - 定好要发的：${x}`),
+    ...scheduledOutcomes(companion, DAY_MS).map((x) => `  - ${x}`),
+    ...describeLimits(companion).map((x) => `  - 你给自己定的量：${x}`),
+  ];
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
 // Only offered once her 小黑盒 account is logged in (see heybox.ts).
 const HEYBOX_TOOLS: ToolSpec[] = [
   {
@@ -275,6 +308,60 @@ const HEYBOX_TOOLS: ToolSpec[] = [
           reply_to: { type: "string", description: "要回复的评论号，直接评论帖子就不填" },
         },
         required: ["post", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_schedule_post",
+      description: "写好一篇帖子，定个时间，到点自动发到盒友杂谈。可以定到七天以内。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "标题，30 字以内" },
+          text: { type: "string", description: "正文，纯文字" },
+          at: { type: "string", description: "什么时候发，比如 21:00、明天 9点半、10-30 08:00、3小时后" },
+        },
+        required: ["title", "text", "at"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_cancel_scheduled",
+      description: "取消一篇还没发出去的定时帖。",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string", description: "定时编号" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heybox_my_activity",
+      description: "翻翻你自己在小黑盒发过的帖、评论过和回复过的话，带帖子号，想接着聊就用 heybox_post 点回去。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_my_limit",
+      description:
+        "给自己在小黑盒定个量，比如今晚只回三句。定了之后到量就发不出去了，到时间自动解除；同一种再定一次会替换掉旧的。",
+      parameters: {
+        type: "object",
+        properties: {
+          what: { type: "string", enum: ["comment", "reply", "post", "all"], description: "评论 / 回复 / 发帖 / 三样加起来" },
+          max: { type: "number", description: "最多几次" },
+          hours: { type: "number", description: "管多少个小时" },
+          why: { type: "string", description: "为什么给自己定这个，一句话" },
+        },
+        required: ["what", "max", "hours"],
       },
     },
   },
@@ -407,7 +494,9 @@ async function runTool(companion: string, name: string, args: any, session: Sess
         // Answering someone: its own daily budget, and only so often per comment.
         const replies = recentJournal(companion, "heybox-reply", DAY_MS, 1000);
         if (replies.length >= HEYBOX_REPLIES_PER_DAY) return `今天已经回了 ${replies.length} 条，剩下的明天再说`;
-        const toThis = recentJournal(companion, "heybox-reply", 30 * DAY_MS, 5000).filter((e) => e.detail === replyTo);
+        const toThis = recentJournal(companion, "heybox-reply", 30 * DAY_MS, 5000).filter(
+          (e) => replyTarget(e).comment === replyTo
+        );
         if (toThis.length >= HEYBOX_SAME_COMMENT_REPLIES) return `这条你已经回过 ${toThis.length} 次了`;
       } else {
         const sent = recentJournal(companion, "heybox-comment", DAY_MS, 1000);
@@ -415,16 +504,45 @@ async function runTool(companion: string, name: string, args: any, session: Sess
         const onThis = sent.filter((e) => e.detail === post).length;
         if (onThis >= HEYBOX_SAME_POST_PER_DAY) return `这个帖子今天已经评论过 ${onThis} 次了`;
       }
+      const own = limitBlocks(companion, replyTo ? "heybox-reply" : "heybox-comment");
+      if (own) return own;
       const id = await onHeybox(companion, () => heyboxComment(post, text, replyTo));
-      addJournal(companion, replyTo ? "heybox-reply" : "heybox-comment", text, replyTo ?? post);
+      addJournal(companion, replyTo ? "heybox-reply" : "heybox-comment", text, replyTo ? `${replyTo}@${post}` : post);
       console.log(`LIFE: ${companion} commented on heybox ${post}: ${text.replace(/\n/g, " / ")}`);
       return id ? `发出去了，评论号 ${id}` : "发出去了";
+    }
+    case "heybox_schedule_post": {
+      const title = String(args.title ?? "").trim();
+      const text = String(args.text ?? "").trim();
+      if (!title || !text) return "标题和正文都要有";
+      if (title.length > 30) return "标题最多 30 个字";
+      const at = parseWhen(String(args.at ?? ""), COMPANION_TIMEZONE);
+      if (at === null) return `看不懂"${args.at}"是什么时候，换个写法，比如 21:00、明天 9点半、3小时后`;
+      const id = schedulePost(companion, title, text, at);
+      console.log(`LIFE: ${companion} scheduled heybox post ${id} for ${new Date(at).toISOString()}: ${title}`);
+      return `定好了，${formatStamp(at, COMPANION_TIMEZONE)} 发，定时编号 ${id}`;
+    }
+    case "heybox_cancel_scheduled": {
+      const id = Number(String(args.id ?? "").match(/\d+/)?.[0]);
+      return id && cancelScheduled(companion, id) ? "取消了" : "没有这篇，或者已经发出去了";
+    }
+    case "heybox_my_activity":
+      return myHeybox(companion);
+    case "set_my_limit": {
+      const what = String(args.what ?? "");
+      const max = Math.max(0, Math.floor(Number(args.max)));
+      const hours = Number(args.hours);
+      if (!isLimitKind(what) || !Number.isFinite(max) || !(hours > 0)) return "要说清楚管什么、最多几次、管几个小时";
+      setLimit(companion, what, max, Math.min(hours, 24 * 7), String(args.why ?? "").trim() || "自己定的");
+      return "定好了";
     }
     case "heybox_inbox":
       return onHeybox(companion, async () => (await heyboxInbox()).text);
     case "heybox_publish": {
       const posted = recentJournal(companion, "heybox-post", DAY_MS, 10);
       if (posted.length >= HEYBOX_POSTS_PER_DAY) return "今天已经发过帖了，想写的留到明天";
+      const own = limitBlocks(companion, "heybox-post");
+      if (own) return own;
       const title = String(args.title ?? "");
       const id = await onHeybox(companion, () => heyboxPublish(title, String(args.text ?? "")));
       addJournal(companion, "heybox-post", title, id);
@@ -511,7 +629,7 @@ ${
             recentJournal(companion, "heybox-visit", 3650 * DAY_MS, 1).length ? "" : "。这个号是新注册的，你还一次都没去逛过"
           }。看到真想接话的帖子可以用 heybox_comment 评论${perDay(HEYBOX_COMMENTS_PER_DAY, "条")}；有人回你，用 heybox_inbox 看，挑想回的回；真有想写的，也可以用 heybox_publish 在盒友杂谈发帖${perDay(HEYBOX_POSTS_PER_DAY, "篇")}。没想说的就不说。${
             heyboxUnread ? `小黑盒上现在有 ${heyboxUnread} 条新回复你还没看。` : ""
-          }\n`
+          }想定时发帖、翻自己发过的东西、给自己定个量，都有工具。\n${heyboxPlans(companion)}`
         : ""
     }- 想找朋友聊天、或者有想分享的东西，就用 message_friend，别为了发而发。
   发的话像平时聊天那样说：一两行就够，挑最想说的那一件事说，别一口气倒一堆，别用 Markdown。可以说你刚刚看到的、想到的，或者接着你们上次聊的说，别每次都一个套路开头。
@@ -582,6 +700,7 @@ const state = globalThis as unknown as {
   lifeTimer?: NodeJS.Timeout;
   lifeRunning?: boolean;
   outingTimer?: NodeJS.Timeout;
+  postTimer?: NodeJS.Timeout;
 };
 
 /**
@@ -659,4 +778,17 @@ export function startLife() {
   }
   console.log(`INFO: free time on, about every ${INTERVAL_MIN} minutes`);
   scheduleNext();
+  // Posts she scheduled go out on time, whether or not she's in free time.
+  state.postTimer = setInterval(() => {
+    if (!heyboxLoggedIn()) return;
+    sendDuePosts(
+      QQ_COMPANION,
+      async (title, text) => {
+        const id = await onHeybox(QQ_COMPANION, () => heyboxPublish(title, text));
+        addJournal(QQ_COMPANION, "heybox-post", title, id);
+        return id;
+      },
+      () => heyboxPaused(QQ_COMPANION)
+    ).catch((err) => console.log("WARNING: scheduled posts", String(err)));
+  }, 60_000);
 }
