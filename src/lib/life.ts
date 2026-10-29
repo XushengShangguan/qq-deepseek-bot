@@ -88,6 +88,9 @@ const HEYBOX_POSTS_PER_DAY = Number(process.env.HEYBOX_POSTS_PER_DAY || 1);
 const HEYBOX_SAME_POST_PER_DAY = Number(process.env.HEYBOX_SAME_POST_PER_DAY || 5);
 const HEYBOX_SAME_COMMENT_REPLIES = Number(process.env.HEYBOX_SAME_COMMENT_REPLIES || 5);
 const HEYBOX_ERRORS_BEFORE_PAUSE = Number(process.env.HEYBOX_ERRORS_BEFORE_PAUSE || 5);
+// Time between any two things she writes there. Twenty-odd writes in a
+// morning from a new account got it flagged and every request captcha'd.
+const HEYBOX_MIN_GAP_MS = Number(process.env.HEYBOX_MIN_GAP_MINUTES ?? 10) * 60 * 1000;
 const HEYBOX_PAUSE_MS = 24 * 3600 * 1000;
 // A limit set high enough to mean "no limit" isn't worth telling her about.
 const perDay = (n: number, unit: string) => (n < 100 ? `（一天最多 ${n} ${unit}）` : "");
@@ -371,6 +374,19 @@ function toolsFor(): ToolSpec[] {
   return heyboxLoggedIn() ? [...TOOLS, ...HEYBOX_TOOLS] : TOOLS;
 }
 
+/** Why she has to wait before writing on 小黑盒 again, or null. */
+function heyboxTooSoon(companion: string): string | null {
+  const last = Math.max(
+    0,
+    ...["heybox-post", "heybox-comment", "heybox-reply"].map(
+      (k) => recentJournal(companion, k, HEYBOX_MIN_GAP_MS, 1)[0]?.created_at ?? 0
+    )
+  );
+  if (!last) return null;
+  const wait = Math.ceil((last + HEYBOX_MIN_GAP_MS - Date.now()) / 60_000);
+  return wait > 0 ? `刚在小黑盒说过话，${wait} 分钟后才能再发（发太密会被当成机器人）` : null;
+}
+
 /** Why 小黑盒 is off limits right now, or null. */
 function heyboxPaused(companion: string): string | null {
   const last = recentJournal(companion, "heybox-blocked", HEYBOX_PAUSE_MS, 50).pop();
@@ -504,7 +520,7 @@ async function runTool(companion: string, name: string, args: any, session: Sess
         const onThis = sent.filter((e) => e.detail === post).length;
         if (onThis >= HEYBOX_SAME_POST_PER_DAY) return `这个帖子今天已经评论过 ${onThis} 次了`;
       }
-      const own = limitBlocks(companion, replyTo ? "heybox-reply" : "heybox-comment");
+      const own = limitBlocks(companion, replyTo ? "heybox-reply" : "heybox-comment") ?? heyboxTooSoon(companion);
       if (own) return own;
       const id = await onHeybox(companion, () => heyboxComment(post, text, replyTo));
       addJournal(companion, replyTo ? "heybox-reply" : "heybox-comment", text, replyTo ? `${replyTo}@${post}` : post);
@@ -541,7 +557,7 @@ async function runTool(companion: string, name: string, args: any, session: Sess
     case "heybox_publish": {
       const posted = recentJournal(companion, "heybox-post", DAY_MS, 10);
       if (posted.length >= HEYBOX_POSTS_PER_DAY) return "今天已经发过帖了，想写的留到明天";
-      const own = limitBlocks(companion, "heybox-post");
+      const own = limitBlocks(companion, "heybox-post") ?? heyboxTooSoon(companion);
       if (own) return own;
       const title = String(args.title ?? "");
       const id = await onHeybox(companion, () => heyboxPublish(title, String(args.text ?? "")));
@@ -788,7 +804,7 @@ export function startLife() {
         addJournal(QQ_COMPANION, "heybox-post", title, id);
         return id;
       },
-      () => heyboxPaused(QQ_COMPANION)
+      () => heyboxPaused(QQ_COMPANION) ?? heyboxTooSoon(QQ_COMPANION)
     ).catch((err) => console.log("WARNING: scheduled posts", String(err)));
   }, 60_000);
 }

@@ -50,7 +50,8 @@ export function describeScheduled(companion: string): string[] {
 /**
  * Send what's due. Next.js runs more than one server process, each with its
  * own timer; whoever flips a post from pending to sending sends it.
- * `publish` returns the new post id, or throws; `paused` says to wait.
+ * `publish` returns the new post id, or throws; `paused` says to wait
+ * (小黑盒 paused, or too soon after her last write).
  */
 export async function sendDuePosts(
   companion: string,
@@ -63,6 +64,7 @@ export async function sendDuePosts(
     .all(companion, Date.now()) as ScheduledPost[];
   for (const p of due) {
     if (paused()) return; // stays pending; tried again on a later tick
+    // Claim first, then send; the next due post waits for the gap after this one.
     if (db.prepare(`UPDATE scheduled_posts SET state = 'sending' WHERE id = ? AND state = 'pending'`).run(p.id).changes !== 1)
       continue;
     try {
